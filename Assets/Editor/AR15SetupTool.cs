@@ -21,7 +21,7 @@ namespace VRAtis.EditorTools
         private const string CasingPrefabPath = "Assets/Prefabs/BrassCasing556.prefab";
         private const string AudioFolderPath = "Assets/Audio/Weapons";
         private const string SetupInstanceName = "AR15_WithRedDot";
-        private const string AutoSetupVersionKey = "VRAtis_AR15_BakedV10_Done";
+        private const string AutoSetupVersionKey = "VRAtis_AR15_BakedV12_Done";
 
         static AR15SetupTool()
         {
@@ -269,34 +269,42 @@ namespace VRAtis.EditorTools
             }
             mechSo.ApplyModifiedPropertiesWithoutUndo();
 
-            // Wire RifleAudioController (gunshot audio pool at muzzle)
+            // Wire RifleAudioController (gunshot audio pool + 3D brass casing bounce pool)
             RifleAudioController audioCtrl = recoilPivot.GetComponent<RifleAudioController>();
             if (audioCtrl == null)
                 audioCtrl = recoilPivot.gameObject.AddComponent<RifleAudioController>();
 
             AudioClip shot01 = LoadConfiguredShotClip($"{AudioFolderPath}/AR15_Shot_01.wav");
             AudioClip shot02 = LoadConfiguredShotClip($"{AudioFolderPath}/AR15_Shot_02.wav");
+            AudioClip casing01 = LoadConfiguredShotClip($"{AudioFolderPath}/CasingBounce_01.wav");
+            AudioClip casing02 = LoadConfiguredShotClip($"{AudioFolderPath}/CasingBounce_02.wav");
+            AudioClip magEject01 = LoadConfiguredShotClip($"{AudioFolderPath}/MagEject_01.wav");
+            AudioClip magEject02 = LoadConfiguredShotClip($"{AudioFolderPath}/MagEject_02.wav");
+            AudioClip magInsert01 = LoadConfiguredShotClip($"{AudioFolderPath}/MagInsert_01.wav");
+            AudioClip magInsert02 = LoadConfiguredShotClip($"{AudioFolderPath}/MagInsert_02.wav");
+
             SerializedObject audioSo = new SerializedObject(audioCtrl);
             audioSo.FindProperty("muzzleTransform").objectReferenceValue = muzzleTransform;
             audioSo.FindProperty("shotVolume").floatValue = 1.0f;
             audioSo.FindProperty("volumeVariation").vector2Value = new Vector2(0.96f, 1.0f);
             audioSo.FindProperty("spatialBlend").floatValue = 0.25f;
+            audioSo.FindProperty("casingVolume").floatValue = 0.45f;
+            audioSo.FindProperty("casingSpatialBlend").floatValue = 0.85f;
+            audioSo.FindProperty("magVolume").floatValue = 0.72f;
+            audioSo.FindProperty("magSpatialBlend").floatValue = 0.35f;
             audioSo.FindProperty("enableMountainValleyReverb").boolValue = false;
             GameObject oldReverb = GameObject.Find("MountainValley_ReverbZone");
             if (oldReverb != null) Object.DestroyImmediate(oldReverb);
-            SerializedProperty clipsProp = audioSo.FindProperty("gunshotClips");
-            clipsProp.ClearArray();
-            if (shot01 != null)
-            {
-                clipsProp.InsertArrayElementAtIndex(clipsProp.arraySize);
-                clipsProp.GetArrayElementAtIndex(clipsProp.arraySize - 1).objectReferenceValue = shot01;
-            }
-            if (shot02 != null)
-            {
-                clipsProp.InsertArrayElementAtIndex(clipsProp.arraySize);
-                clipsProp.GetArrayElementAtIndex(clipsProp.arraySize - 1).objectReferenceValue = shot02;
-            }
+
+            SetAudioClipArray(audioSo.FindProperty("gunshotClips"), shot01, shot02);
+            SetAudioClipArray(audioSo.FindProperty("casingBounceClips"), casing01, casing02);
+            SetAudioClipArray(audioSo.FindProperty("magEjectClips"), magEject01, magEject02);
+            SetAudioClipArray(audioSo.FindProperty("magInsertClips"), magInsert01, magInsert02);
             audioSo.ApplyModifiedPropertiesWithoutUndo();
+
+            SerializedObject mechAudioSo = new SerializedObject(mech);
+            mechAudioSo.FindProperty("audioController").objectReferenceValue = audioCtrl;
+            mechAudioSo.ApplyModifiedPropertiesWithoutUndo();
 
             RifleWeapon weapon = playerRifle.GetComponent<RifleWeapon>();
             if (weapon != null)
@@ -311,6 +319,8 @@ namespace VRAtis.EditorTools
                 EnsurePersistentListener(weapon.onWeaponFired, vfx, nameof(RifleVisualEffects.PlayMuzzleFlash));
                 EnsurePersistentListener(weapon.onWeaponFired, mech, nameof(RifleMechanismController.OnWeaponFired));
                 EnsurePersistentListener(weapon.onWeaponFired, audioCtrl, nameof(RifleAudioController.PlayGunshot));
+                EnsurePersistentListener(weapon.onMagazineEjected, audioCtrl, nameof(RifleAudioController.PlayMagEject));
+                EnsurePersistentListener(weapon.onMagazineInserted, audioCtrl, nameof(RifleAudioController.PlayMagInsert));
                 EditorUtility.SetDirty(weapon);
             }
 
@@ -548,8 +558,26 @@ namespace VRAtis.EditorTools
                 UnityEventTools.AddPersistentListener(evt, vfx.PlayMuzzleFlash);
             else if (target is RifleMechanismController mech && methodName == nameof(RifleMechanismController.OnWeaponFired))
                 UnityEventTools.AddPersistentListener(evt, mech.OnWeaponFired);
-            else if (target is RifleAudioController audioCtrl && methodName == nameof(RifleAudioController.PlayGunshot))
-                UnityEventTools.AddPersistentListener(evt, audioCtrl.PlayGunshot);
+            else if (target is RifleAudioController audioCtrl)
+            {
+                if (methodName == nameof(RifleAudioController.PlayGunshot))
+                    UnityEventTools.AddPersistentListener(evt, audioCtrl.PlayGunshot);
+                else if (methodName == nameof(RifleAudioController.PlayMagEject))
+                    UnityEventTools.AddPersistentListener(evt, audioCtrl.PlayMagEject);
+                else if (methodName == nameof(RifleAudioController.PlayMagInsert))
+                    UnityEventTools.AddPersistentListener(evt, audioCtrl.PlayMagInsert);
+            }
+        }
+
+        private static void SetAudioClipArray(SerializedProperty prop, params AudioClip[] clips)
+        {
+            prop.ClearArray();
+            foreach (AudioClip clip in clips)
+            {
+                if (clip == null) continue;
+                prop.InsertArrayElementAtIndex(prop.arraySize);
+                prop.GetArrayElementAtIndex(prop.arraySize - 1).objectReferenceValue = clip;
+            }
         }
 
         private static AudioClip LoadConfiguredShotClip(string assetPath)

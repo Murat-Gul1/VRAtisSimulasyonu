@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
+using Random = UnityEngine.Random;
 
 namespace VRAtis.Weapons
 {
@@ -22,6 +24,7 @@ namespace VRAtis.Weapons
         [SerializeField] private Transform dustCoverTransform;
         [SerializeField] private Transform ejectionPoint;
         [SerializeField] private Transform magazineTransform;
+        [SerializeField] private RifleAudioController audioController;
 
         [Header("Sürgü (Bolt) Hareketi")]
         [Tooltip("Ateş edildiğinde sürgünün geri gideceği mesafe (metre).")]
@@ -73,10 +76,14 @@ namespace VRAtis.Weapons
 
         private readonly Queue<EjectedCasing> _casingPool = new Queue<EjectedCasing>();
         private readonly Queue<DroppedMagazine> _droppedMagPool = new Queue<DroppedMagazine>();
+        private Action<Vector3, float> _cachedCasingBounceHandler;
 
         private void Awake()
         {
             ResolveMagazineFallback();
+            if (audioController == null)
+                audioController = GetComponent<RifleAudioController>();
+            _cachedCasingBounceHandler = HandleCasingGroundImpact;
 
             if (boltCarrierTransform != null)
                 _boltHomeLocalPos = boltCarrierTransform.localPosition;
@@ -355,7 +362,13 @@ namespace VRAtis.Weapons
                 Random.Range(spinSpeedDegPerSec * 0.5f, spinSpeedDegPerSec),
                 Random.Range(-spinSpeedDegPerSec * 0.6f, spinSpeedDegPerSec * 0.6f));
 
-            casing.Launch(ejectionPoint.position, ejectionPoint.rotation, worldVel, angularVel, ReturnCasingToPool);
+            casing.Launch(ejectionPoint.position, ejectionPoint.rotation, worldVel, angularVel, ReturnCasingToPool, _cachedCasingBounceHandler);
+        }
+
+        private void HandleCasingGroundImpact(Vector3 worldPos, float impactStrength)
+        {
+            if (audioController != null)
+                audioController.PlayCasingBounce(worldPos, impactStrength);
         }
 
         private void WarmCasingPool()

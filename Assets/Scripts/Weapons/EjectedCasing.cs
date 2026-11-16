@@ -23,16 +23,26 @@ namespace VRAtis.Weapons
         private bool _isResting;
         private float _age;
         private float _restTimer;
+        private bool _hasReportedFirstImpact;
         private Action<EjectedCasing> _returnCallback;
+        private Action<Vector3, float> _onFirstGroundImpact;
 
-        public void Launch(Vector3 startPos, Quaternion startRot, Vector3 initialVelocity, Vector3 angularVelDeg, Action<EjectedCasing> returnToPool)
+        public void Launch(
+            Vector3 startPos,
+            Quaternion startRot,
+            Vector3 initialVelocity,
+            Vector3 angularVelDeg,
+            Action<EjectedCasing> returnToPool,
+            Action<Vector3, float> onFirstGroundImpact = null)
         {
             transform.SetPositionAndRotation(startPos, startRot);
             _velocity = initialVelocity;
             _angularVelDeg = angularVelDeg;
             _returnCallback = returnToPool;
+            _onFirstGroundImpact = onFirstGroundImpact;
             _isActive = true;
             _isResting = false;
+            _hasReportedFirstImpact = false;
             _age = 0f;
             _restTimer = 0f;
             gameObject.SetActive(true);
@@ -69,6 +79,13 @@ namespace VRAtis.Weapons
             if (dist > 0.0001f && _velocity.y < 0f &&
                 Physics.Raycast(pos, step / dist, out RaycastHit hit, dist + casingRadius, groundMask, QueryTriggerInteraction.Ignore))
             {
+                if (!_hasReportedFirstImpact)
+                {
+                    _hasReportedFirstImpact = true;
+                    float impactStrength = Mathf.Clamp(Mathf.Abs(_velocity.y) / 3.8f, 0.55f, 1.0f);
+                    _onFirstGroundImpact?.Invoke(hit.point, impactStrength);
+                }
+
                 nextPos = hit.point + hit.normal * casingRadius;
                 _velocity = Vector3.Reflect(_velocity, hit.normal);
                 _velocity.y *= bounceRestitution;
