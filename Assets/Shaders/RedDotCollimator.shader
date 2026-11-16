@@ -3,6 +3,7 @@ Shader "VRAtis/RedDotCollimator"
     Properties
     {
         [HDR] _DotColor ("Dot Color (HDR)", Color) = (8.0, 0.25, 0.15, 1.0)
+        _ReticlePower ("Reticle Power (On/Off)", Range(0.0, 1.0)) = 0.0
         _DotRadius ("Dot Size (MOA Scale)", Range(0.002, 0.08)) = 0.014
         _DotSoftness ("Dot Edge Softness", Range(0.001, 0.03)) = 0.005
         _ParallaxScale ("Collimation Scale", Range(0.5, 4.0)) = 1.6
@@ -55,6 +56,7 @@ Shader "VRAtis/RedDotCollimator"
 
             CBUFFER_START(UnityPerMaterial)
                 half4 _DotColor;
+                float _ReticlePower;
                 float _DotRadius;
                 float _DotSoftness;
                 float _ParallaxScale;
@@ -116,7 +118,7 @@ Shader "VRAtis/RedDotCollimator"
                 float ringDist = abs(distFromAim - _RingRadius);
                 float ringIntensity = (1.0 - smoothstep(_RingThickness, _RingThickness + _DotSoftness, ringDist)) * _RingEnable;
 
-                float reticleAlpha = saturate(max(dotIntensity, ringIntensity)) * facingMask * radialMask;
+                float reticleAlpha = saturate(max(dotIntensity, ringIntensity)) * facingMask * radialMask * saturate(_ReticlePower);
 
                 half3 color = lerp(_LensTint.rgb, _DotColor.rgb, reticleAlpha);
                 half alpha = saturate(_LensTint.a * radialMask + reticleAlpha);

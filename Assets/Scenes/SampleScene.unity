@@ -5240,6 +5240,8 @@ GameObject:
   - component: {fileID: 330585545}
   - component: {fileID: 330585544}
   - component: {fileID: 330585547}
+  - component: {fileID: 330585548}
+  - component: {fileID: 330585549}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -5286,9 +5288,9 @@ Camera:
     y: 0
     width: 1
     height: 1
-  near clip plane: 0.3
+  near clip plane: 0.04
   far clip plane: 4500
-  field of view: 60
+  field of view: 64
   orthographic: 0
   orthographic size: 5
   m_Depth: -1
@@ -5315,7 +5317,7 @@ Transform:
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 1.93, y: 1.5, z: -4.033}
+  m_LocalPosition: {x: 1.79, y: 1.54, z: -4.343}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -5365,6 +5367,52 @@ MonoBehaviour:
     m_VarianceClampScale: 0.9
     m_ContrastAdaptiveSharpening: 0
   m_Version: 2
+--- !u!114 &330585548
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 330585543}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2ced259eea626b74e8e3ba7f79f58181, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Hardware.HeadTrackingCameraController
+  rifleOrientationController: {fileID: 1252551449}
+  lockLandscapeOnMobile: 1
+  preferGameRotationVector: 1
+  requestedSensorRateHz: 200
+  autoZeroYawOnFirstReading: 1
+  enableAdaptiveSmoothing: 1
+  minSmoothingSpeed: 18
+  maxSmoothingSpeed: 120
+  fastTurnSpeedDegPerSec: 55
+  enableMouseLookInEditor: 1
+  mouseSensitivity: 0.16
+  recenterOnTwoFingerTap: 1
+--- !u!114 &330585549
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 330585543}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: de8adaa926e1add40b691bc3325c33c4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Hardware.CardboardStereoRig
+  enableSplitScreen: 1
+  allowVKeyToggle: 1
+  lensCenterSpacingMm: 66
+  autoDetectPhysicalPhoneWidth: 1
+  fallbackPhoneWidthMm: 154
+  allowLiveCalibrationButtons: 0
+  virtualEyeIpdMm: 45
+  vrVerticalFov: 68
+  singleScreenFov: 64
+  drawBlackMaskBorders: 1
 --- !u!1001 &331199560
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -12412,7 +12460,7 @@ MonoBehaviour:
   udpPort: 4210
   connectionTimeoutMs: 500
   targetFrameRate: 120
-  showDiagnosticsHud: 1
+  showDiagnosticsHud: 0
   spikeLogThresholdMs: 90
   isConnected: 0
   packetRateHz: 0
@@ -16675,6 +16723,11 @@ Transform:
   m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: 14d35a70575cc4044a69b3e176946899, type: 3}
   m_PrefabInstance: {fileID: 1129727952}
   m_PrefabAsset: {fileID: 0}
+--- !u!4 &1132010894 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 6202758735896239188, guid: 373afcece072b2f49b75d141d6738c35, type: 3}
+  m_PrefabInstance: {fileID: 1545831196}
+  m_PrefabAsset: {fileID: 0}
 --- !u!1001 &1138928225
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -18080,6 +18133,7 @@ GameObject:
   - component: {fileID: 1252551450}
   - component: {fileID: 1252551449}
   - component: {fileID: 1252551448}
+  - component: {fileID: 1252551451}
   m_Layer: 0
   m_Name: PlayerRifle
   m_TagString: Untagged
@@ -18232,6 +18286,32 @@ Transform:
   - {fileID: 1283765770}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1252551451
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1252551447}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d50d20793cc516f47bf80903bec2051c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Weapons.WeaponAimController
+  playerRifleTransform: {fileID: 1252551450}
+  redDotAnchor: {fileID: 1132010894}
+  redDotSight: {fileID: 1545831203}
+  mainCameraTransform: {fileID: 330585546}
+  headTracker: {fileID: 330585548}
+  stereoRig: {fileID: 330585549}
+  toggleAimOnKey: 1
+  alignCameraRotationWhenNoMobileSensor: 1
+  aimTransitionDurationSec: 0.24
+  eyeReliefMeters: 0.165
+  adsVerticalOffsetMeters: 0
+  centerDominantRightEyeInVr: 1
+  singleScreenFovZoomDeg: 9
+  vrFovZoomDeg: 5
 --- !u!1001 &1257692103
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -22876,6 +22956,8 @@ MonoBehaviour:
   rifleForwardReference: {fileID: 1283765770}
   dotColor: {r: 8, g: 0.25, b: 0.15, a: 1}
   showOuterRing: 0
+  alwaysKeepReticleOn: 0
+  reticlePower: 0
 --- !u!1001 &1549080014
 PrefabInstance:
   m_ObjectHideFlags: 0

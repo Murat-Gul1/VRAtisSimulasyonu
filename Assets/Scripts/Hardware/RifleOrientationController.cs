@@ -72,6 +72,7 @@ namespace VRAtis.Hardware
 
         private Quaternion _yawCalibrationOffset = Quaternion.identity;
         private bool _hasAutoZeroed;
+        private HeadTrackingCameraController _headTracker;
 
         // Dead-reckoning state
         private uint _lastPacketSeq;
@@ -85,14 +86,21 @@ namespace VRAtis.Hardware
             if (receiver == null)
                 receiver = FindAnyObjectByType<Esp32RifleReceiver>();
 
-            if (headCameraTransform == null && Camera.main != null)
-                headCameraTransform = Camera.main.transform;
+            _headTracker = FindAnyObjectByType<HeadTrackingCameraController>();
+
+            if (headCameraTransform == null)
+            {
+                if (_headTracker != null)
+                    headCameraTransform = _headTracker.transform;
+                else if (Camera.main != null)
+                    headCameraTransform = Camera.main.transform;
+            }
         }
 
         private void Update()
         {
 #if ENABLE_INPUT_SYSTEM
-            if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
+            if (_headTracker == null && Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
             {
                 RecenterToHeadForward();
             }
@@ -188,8 +196,11 @@ namespace VRAtis.Hardware
         /// </summary>
         public void RecenterToHeadForward()
         {
-            if (receiver == null)
+            if (receiver == null || !receiver.IsConnected)
+            {
+                _hasAutoZeroed = false;
                 return;
+            }
 
             Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
             ApplyYawCalibration(converted);

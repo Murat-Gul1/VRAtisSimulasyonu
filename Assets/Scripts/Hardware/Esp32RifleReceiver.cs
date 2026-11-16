@@ -32,8 +32,8 @@ namespace VRAtis.Hardware
         [SerializeField] private int targetFrameRate = 120;
 
         [Header("Takılma Teşhis Sistemi (Canlı Telemetri)")]
-        [Tooltip("F1 tuşu ile sol üstte canlı Wi-Fi / FPS takılma teşhis panelini gösterir.")]
-        [SerializeField] private bool showDiagnosticsHud = true;
+        [Tooltip("F1 tuşu ile canlı Wi-Fi / FPS teşhis panelini açıp kapatır.")]
+        [SerializeField] private bool showDiagnosticsHud = false;
 
         [Tooltip("Wi-Fi paket gecikmesi veya kare süresi bu eşiği (ms) aşarsa Console'a nedenini yazar.")]
         [SerializeField] private float spikeLogThresholdMs = 90f;
@@ -416,11 +416,32 @@ namespace VRAtis.Hardware
             }
 
             string status = IsConnected ? "BAĞLI" : "BEKLENİYOR";
+            float liveFps = 1f / Mathf.Max(0.0001f, Time.unscaledDeltaTime);
+
+            if (CardboardStereoRig.IsStereoSplitActive)
+            {
+                Rect leftNorm = CardboardStereoRig.LeftEyeViewportNorm;
+                Rect rightNorm = CardboardStereoRig.RightEyeViewportNorm;
+                float eyePxW = leftNorm.width * Screen.width;
+                float boxW = Mathf.Clamp(eyePxW * 0.65f, 180f, 300f);
+                float boxH = 56f;
+                float yPos = Mathf.Max(28f, Screen.height * 0.14f);
+                string vrText =
+                    $"FPS: {liveFps:F0} ({MaxUnityFrameTimeMs:F1} ms) | Mercek: {CardboardStereoRig.ActiveLensSpacingMm:F0}mm\n" +
+                    $"ESP32: {status} ({PacketRateHz:F0} Hz) | En: {CardboardStereoRig.DetectedPhoneWidthMm:F0}mm";
+
+                float leftX = leftNorm.x * Screen.width + (eyePxW - boxW) * 0.5f;
+                float rightX = rightNorm.x * Screen.width + (rightNorm.width * Screen.width - boxW) * 0.5f;
+                GUI.Box(new Rect(leftX, yPos, boxW, boxH), vrText, _hudStyle);
+                GUI.Box(new Rect(rightX, yPos, boxW, boxH), vrText, _hudStyle);
+                return;
+            }
+
             string text =
                 $"[ESP32 Telemetri - Gizlemek için F1]\n" +
                 $"Durum: {status} | Paket Hızı: {PacketRateHz:F0} Hz | Atış: {TotalShotCount}\n" +
                 $"Maks Wi-Fi Paket Boşluğu: {MaxWifiPacketGapMs:F1} ms (Normal: ~5-12 ms)\n" +
-                $"Maks Unity Kare Süresi: {MaxUnityFrameTimeMs:F1} ms ({(1f / Mathf.Max(0.0001f, Time.unscaledDeltaTime)):F0} FPS)\n" +
+                $"Maks Unity Kare Süresi: {MaxUnityFrameTimeMs:F1} ms ({liveFps:F0} FPS)\n" +
                 $"Eritilen Paket Şişmesi: {BurstDrainedPerSec}/sn";
 
             GUI.Box(new Rect(12f, 12f, 430f, 102f), text, _hudStyle);

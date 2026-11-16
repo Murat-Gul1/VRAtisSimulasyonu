@@ -4,7 +4,7 @@ namespace VRAtis.Weapons
 {
     /// <summary>
     /// Keeps the parallax Red Dot collimator shader's local forward/up axes synced
-    /// with the rifle's aim transform regardless of imported mesh axis orientation.
+    /// with the rifle's aim transform and smoothly drives LED reticle power on/off during ADS.
     /// </summary>
     [ExecuteAlways]
     public class RedDotSightController : MonoBehaviour
@@ -13,14 +13,30 @@ namespace VRAtis.Weapons
         private static readonly int UpAxisId = Shader.PropertyToID("_UpAxis");
         private static readonly int DotColorId = Shader.PropertyToID("_DotColor");
         private static readonly int RingEnableId = Shader.PropertyToID("_RingEnable");
+        private static readonly int ReticlePowerId = Shader.PropertyToID("_ReticlePower");
 
         [SerializeField] private Transform rifleForwardReference;
         [ColorUsage(true, true)]
         [SerializeField] private Color dotColor = new Color(8f, 0.25f, 0.15f, 1f);
         [SerializeField] private bool showOuterRing;
 
+        [Header("Red Dot Gücü (Nişan Alma LED Kontrolü)")]
+        [Tooltip("Açıkken Red Dot sürekli yanık kalır; kapalıyken sadece nişan alma (ADS) sırasında yanar.")]
+        [SerializeField] private bool alwaysKeepReticleOn = false;
+
+        [Range(0f, 1f)]
+        [SerializeField] private float reticlePower = 0f;
+
         private Renderer _renderer;
         private MaterialPropertyBlock _propBlock;
+
+        public float ReticlePower => alwaysKeepReticleOn ? 1f : reticlePower;
+
+        private void Awake()
+        {
+            if (Application.isPlaying && !alwaysKeepReticleOn)
+                reticlePower = 0f;
+        }
 
         private void OnEnable()
         {
@@ -38,6 +54,12 @@ namespace VRAtis.Weapons
         public void SetReference(Transform rifleRef)
         {
             rifleForwardReference = rifleRef;
+            UpdateShaderVectors();
+        }
+
+        public void SetReticlePower(float power01)
+        {
+            reticlePower = Mathf.Clamp01(power01);
             UpdateShaderVectors();
         }
 
@@ -60,6 +82,7 @@ namespace VRAtis.Weapons
             _propBlock.SetVector(UpAxisId, new Vector4(localUp.x, localUp.y, localUp.z, 0f));
             _propBlock.SetColor(DotColorId, dotColor);
             _propBlock.SetFloat(RingEnableId, showOuterRing ? 1f : 0f);
+            _propBlock.SetFloat(ReticlePowerId, alwaysKeepReticleOn ? 1f : reticlePower);
             _renderer.SetPropertyBlock(_propBlock);
         }
     }
