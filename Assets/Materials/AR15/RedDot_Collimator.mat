@@ -25,14 +25,15 @@ Material:
     m_TexEnvs: []
     m_Ints: []
     m_Floats:
-    - _DotRadius: 0.014
-    - _DotSoftness: 0.005
+    - _DotRadius: 0.0028
+    - _DotSoftness: 0.0011
     - _ParallaxScale: 1.6
+    - _ReticlePower: 0
     - _RingEnable: 0
     - _RingRadius: 0.14
     - _RingThickness: 0.008
     m_Colors:
-    - _DotColor: {r: 8, g: 0.25, b: 0.15, a: 1}
+    - _DotColor: {r: 3.6, g: 0.16, b: 0.08, a: 1}
     - _ForwardAxis: {r: 0, g: 0, b: 1, a: 0}
     - _LensTint: {r: 0.04, g: 0.13999996, b: 0.17999998, a: 0.14}
     - _UpAxis: {r: 0, g: 1, b: 0, a: 0}

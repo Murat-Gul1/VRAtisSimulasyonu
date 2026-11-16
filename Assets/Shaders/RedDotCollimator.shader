@@ -2,10 +2,10 @@ Shader "VRAtis/RedDotCollimator"
 {
     Properties
     {
-        [HDR] _DotColor ("Dot Color (HDR)", Color) = (8.0, 0.25, 0.15, 1.0)
+        [HDR] _DotColor ("Dot Color (HDR)", Color) = (3.6, 0.16, 0.08, 1.0)
         _ReticlePower ("Reticle Power (On/Off)", Range(0.0, 1.0)) = 0.0
-        _DotRadius ("Dot Size (MOA Scale)", Range(0.002, 0.08)) = 0.014
-        _DotSoftness ("Dot Edge Softness", Range(0.001, 0.03)) = 0.005
+        _DotRadius ("Dot Size (MOA Scale)", Range(0.0005, 0.05)) = 0.0028
+        _DotSoftness ("Dot Edge Softness", Range(0.0003, 0.02)) = 0.0011
         _ParallaxScale ("Collimation Scale", Range(0.5, 4.0)) = 1.6
         _RingEnable ("Show Tactical Outer Ring (0/1)", Range(0, 1)) = 0.0
         _RingRadius ("Outer Ring Radius", Range(0.05, 0.35)) = 0.14
@@ -111,8 +111,9 @@ Shader "VRAtis/RedDotCollimator"
                 float2 angularOffset = float2(dot(rayOS, rightVec), dot(rayOS, upVec)) / safeDenom;
                 float distFromAim = length(angularOffset * _ParallaxScale);
 
-                // Crisp glowing center dot
-                float dotIntensity = 1.0 - smoothstep(_DotRadius, _DotRadius + _DotSoftness, distFromAim);
+                // Crisp glowing ~3 MOA center dot with screen-space AA so needle-point dot stays sharp without shimmer
+                float aa = max(_DotSoftness, fwidth(distFromAim) * 0.85);
+                float dotIntensity = 1.0 - smoothstep(_DotRadius, _DotRadius + aa, distFromAim);
 
                 // Optional EOTech-style outer reticle ring
                 float ringDist = abs(distFromAim - _RingRadius);

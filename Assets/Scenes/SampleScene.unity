@@ -22954,7 +22954,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Weapons.RedDotSightController
   rifleForwardReference: {fileID: 1283765770}
-  dotColor: {r: 8, g: 0.25, b: 0.15, a: 1}
+  dotColor: {r: 3.6, g: 0.16, b: 0.08, a: 1}
   showOuterRing: 0
   alwaysKeepReticleOn: 0
   reticlePower: 0

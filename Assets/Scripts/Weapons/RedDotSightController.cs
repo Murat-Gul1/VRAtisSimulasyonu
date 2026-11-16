@@ -17,7 +17,7 @@ namespace VRAtis.Weapons
 
         [SerializeField] private Transform rifleForwardReference;
         [ColorUsage(true, true)]
-        [SerializeField] private Color dotColor = new Color(8f, 0.25f, 0.15f, 1f);
+        [SerializeField] private Color dotColor = new Color(3.6f, 0.16f, 0.08f, 1f);
         [SerializeField] private bool showOuterRing;
 
         [Header("Red Dot Gücü (Nişan Alma LED Kontrolü)")]
