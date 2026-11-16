@@ -15,12 +15,28 @@ namespace VRAtis.Weapons
     /// </summary>
     public class RifleWeapon : MonoBehaviour
     {
+        private enum ReloadPhase
+        {
+            None,
+            EjectWait,
+            Inserting,
+            BoltReleaseWait
+        }
+
         [Header("Referanslar")]
         [SerializeField] private Esp32RifleReceiver esp32Receiver;
         [Tooltip("Merminin çıkacağı namlu ucu Transform'u.")]
         [SerializeField] private Transform muzzleTransform;
         [Tooltip("BallisticBullet bileşeni taşıyan mermi prefab'ı (boşsa runtime'da minimal obje üretilir).")]
         [SerializeField] private BallisticBullet bulletPrefab;
+        [SerializeField] private RifleMechanismController mechanismController;
+
+        [Header("Şarjör ve Mermi (Askeri Standart 30 Mermi - Ekransız)")]
+        [SerializeField] private int magazineCapacity = 30;
+        [SerializeField] private bool startWithFullMagazine = true;
+        [SerializeField] private float ejectToSwapDelaySec = 0.52f;
+        [SerializeField] private float insertSeatDurationSec = 0.26f;
+        [SerializeField] private float boltReleaseDelaySec = 0.14f;
 
         [Header("Geri Tepme (Görsel Child Pivot)")]
         [Tooltip("ESP32 ana rotasyonunu bozmamak için silah modelini taşıyan alt Transform.")]
@@ -33,8 +49,18 @@ namespace VRAtis.Weapons
         [SerializeField] private int initialPoolSize = 16;
         [SerializeField] private bool allowEditorTestFire = true;
 
-        [Header("Olaylar (Adım 3: Namlu Alevi / Ses için)")]
+        [Header("Olaylar (Efekt, Mekanizma ve Ses Kancaları)")]
         public UnityEvent onWeaponFired;
+        public UnityEvent onDryFire;
+        public UnityEvent onMagazineEjected;
+        public UnityEvent onMagazineInserted;
+        public UnityEvent onBoltReleased;
+
+        public int CurrentAmmo { get; private set; }
+        public int MagazineCapacity => magazineCapacity;
+        public bool IsMagazineInserted { get; private set; }
+        public bool IsBoltLockedOpen { get; private set; }
+        public bool IsReloading => _reloadPhase != ReloadPhase.None;
 
         private readonly Queue<BallisticBullet> _bulletPool = new Queue<BallisticBullet>();
         private static Material _sharedTracerMaterial;
@@ -43,13 +69,23 @@ namespace VRAtis.Weapons
         private float _recoilPosVel;
         private float _recoilPitchVel;
 
+        private ReloadPhase _reloadPhase = ReloadPhase.None;
+        private float _reloadTimer;
+
         private void Awake()
         {
             if (esp32Receiver == null)
                 esp32Receiver = FindAnyObjectByType<Esp32RifleReceiver>();
 
+            if (mechanismController == null)
+                mechanismController = GetComponentInChildren<RifleMechanismController>();
+
             if (muzzleTransform == null)
                 muzzleTransform = transform;
+
+            IsMagazineInserted = startWithFullMagazine;
+            CurrentAmmo = startWithFullMagazine ? magazineCapacity : 0;
+            IsBoltLockedOpen = false;
 
             WarmPool();
         }
@@ -69,16 +105,27 @@ namespace VRAtis.Weapons
         private void Update()
         {
 #if ENABLE_INPUT_SYSTEM
-            if (allowEditorTestFire && Application.isEditor)
+            if (Keyboard.current != null)
             {
-                bool keyFire = Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame;
-                bool mouseFire = Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
-                if (keyFire || mouseFire)
+                if (Keyboard.current.gKey.wasPressedThisFrame)
+                    Reload();
+                else if (Keyboard.current.vKey.wasPressedThisFrame)
+                    ToggleMagazine();
+
+                if (allowEditorTestFire && Application.isEditor)
                 {
-                    Fire();
+                    bool keyFire = Keyboard.current.spaceKey.wasPressedThisFrame;
+                    bool mouseFire = Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
+                    if (keyFire || mouseFire)
+                        Fire();
                 }
             }
+            else if (allowEditorTestFire && Application.isEditor && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+            {
+                Fire();
+            }
 #endif
+            UpdateReloadState(Time.deltaTime);
             UpdateRecoilSpring();
         }
 
@@ -89,6 +136,14 @@ namespace VRAtis.Weapons
 
         public void Fire()
         {
+            if (IsReloading || !IsMagazineInserted || CurrentAmmo <= 0)
+            {
+                onDryFire?.Invoke();
+                return;
+            }
+
+            CurrentAmmo--;
+
             BallisticBullet bullet = AcquireBullet();
             bullet.Launch(
                 muzzleTransform.position,
@@ -101,7 +156,109 @@ namespace VRAtis.Weapons
             _recoilPosOffset.z -= recoilKickBackMeters;
             _recoilPitchOffset -= recoilPitchUpDeg;
 
+            if (CurrentAmmo == 0)
+            {
+                IsBoltLockedOpen = true;
+                if (mechanismController != null)
+                    mechanismController.LockBoltOpenAfterCycle();
+            }
+
             onWeaponFired?.Invoke();
+        }
+
+        public void Reload()
+        {
+            if (IsReloading)
+                return;
+
+            if (IsMagazineInserted)
+            {
+                EjectMagazine();
+                _reloadPhase = ReloadPhase.EjectWait;
+                _reloadTimer = ejectToSwapDelaySec;
+            }
+            else
+            {
+                InsertFreshMagazine();
+            }
+        }
+
+        public void ToggleMagazine()
+        {
+            if (IsReloading)
+                return;
+
+            if (IsMagazineInserted)
+                EjectMagazine();
+            else
+                InsertFreshMagazine();
+        }
+
+        public void EjectMagazine()
+        {
+            if (!IsMagazineInserted || IsReloading)
+                return;
+
+            IsMagazineInserted = false;
+            CurrentAmmo = 0;
+            if (mechanismController != null)
+                mechanismController.EjectMagazine(true);
+            onMagazineEjected?.Invoke();
+        }
+
+        public void InsertFreshMagazine()
+        {
+            if (IsMagazineInserted || IsReloading)
+                return;
+
+            BeginInsertFreshMagazine();
+        }
+
+        private void BeginInsertFreshMagazine()
+        {
+            IsMagazineInserted = true;
+            CurrentAmmo = magazineCapacity;
+            if (mechanismController != null)
+                mechanismController.InsertMagazine();
+            onMagazineInserted?.Invoke();
+
+            _reloadPhase = ReloadPhase.Inserting;
+            _reloadTimer = insertSeatDurationSec;
+        }
+
+        private void UpdateReloadState(float dt)
+        {
+            if (_reloadPhase == ReloadPhase.None)
+                return;
+
+            _reloadTimer -= dt;
+            if (_reloadTimer > 0f)
+                return;
+
+            if (_reloadPhase == ReloadPhase.EjectWait)
+            {
+                BeginInsertFreshMagazine();
+            }
+            else if (_reloadPhase == ReloadPhase.Inserting)
+            {
+                if (IsBoltLockedOpen)
+                {
+                    _reloadPhase = ReloadPhase.BoltReleaseWait;
+                    _reloadTimer = boltReleaseDelaySec;
+                }
+                else
+                {
+                    _reloadPhase = ReloadPhase.None;
+                }
+            }
+            else if (_reloadPhase == ReloadPhase.BoltReleaseWait)
+            {
+                IsBoltLockedOpen = false;
+                if (mechanismController != null)
+                    mechanismController.ReleaseBoltCatch();
+                onBoltReleased?.Invoke();
+                _reloadPhase = ReloadPhase.None;
+            }
         }
 
         private void WarmPool()
@@ -129,27 +286,17 @@ namespace VRAtis.Weapons
 
             GameObject go = new GameObject("PooledBallisticBullet");
 
-            // Lightweight visible projectile & tracer trail for immediate testing
+            // Realistic compact 5.56mm copper-jacketed projectile without unnatural laser trail streaks
             GameObject visual = GameObject.CreatePrimitive(PrimitiveType.Capsule);
             visual.name = "BulletVisual";
             visual.transform.SetParent(go.transform, false);
             visual.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
-            visual.transform.localScale = new Vector3(0.025f, 0.06f, 0.025f);
+            visual.transform.localScale = new Vector3(0.0065f, 0.014f, 0.0065f);
             Destroy(visual.GetComponent<Collider>());
 
-            Material tracerMat = GetSharedTracerMaterial();
-            if (tracerMat != null)
-            {
-                visual.GetComponent<MeshRenderer>().sharedMaterial = tracerMat;
-            }
-
-            TrailRenderer trail = go.AddComponent<TrailRenderer>();
-            trail.time = 0.25f;
-            trail.startWidth = 0.025f;
-            trail.endWidth = 0.002f;
-            trail.minVertexDistance = 0.2f;
-            if (tracerMat != null)
-                trail.sharedMaterial = tracerMat;
+            Material projectileMat = GetSharedTracerMaterial();
+            if (projectileMat != null)
+                visual.GetComponent<MeshRenderer>().sharedMaterial = projectileMat;
 
             return go.AddComponent<BallisticBullet>();
         }
@@ -159,15 +306,14 @@ namespace VRAtis.Weapons
             if (_sharedTracerMaterial != null)
                 return _sharedTracerMaterial;
 
-            Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
             if (shader == null)
-                shader = Shader.Find("Unlit/Color");
-
+                shader = Shader.Find("Universal Render Pipeline/Unlit");
             if (shader == null)
                 return null;
 
             _sharedTracerMaterial = new Material(shader);
-            _sharedTracerMaterial.color = new Color(1f, 0.72f, 0.15f, 1f);
+            _sharedTracerMaterial.color = new Color(0.76f, 0.48f, 0.22f, 1f);
             return _sharedTracerMaterial;
         }
 

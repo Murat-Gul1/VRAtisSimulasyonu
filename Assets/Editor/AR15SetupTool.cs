@@ -14,12 +14,13 @@ namespace VRAtis.EditorTools
     {
         private const string FbxAssetPath = "Assets/Models/AR15/AR15_WithRedDot.fbx";
         private const string CasingFbxPath = "Assets/Models/AR15/BrassCasing556.fbx";
+        private const string MuzzleFlashFbxPath = "Assets/Models/AR15/MuzzleFlash3D.fbx";
         private const string TexFolderPath = "Assets/Models/AR15/Textures";
         private const string MatFolderPath = "Assets/Materials/AR15";
         private const string PrefabFolderPath = "Assets/Prefabs";
         private const string CasingPrefabPath = "Assets/Prefabs/BrassCasing556.prefab";
         private const string SetupInstanceName = "AR15_WithRedDot";
-        private const string AutoSetupVersionKey = "VRAtis_AR15_BakedV4_Done";
+        private const string AutoSetupVersionKey = "VRAtis_AR15_BakedV7_Done";
 
         static AR15SetupTool()
         {
@@ -190,27 +191,54 @@ namespace VRAtis.EditorTools
             Transform boltCarrier = FindDeepChild(instance.transform, "AR15_BoltCarrier");
             Transform dustCover = FindDeepChild(instance.transform, "AR15_DustCover");
             Transform ejectionPoint = FindDeepChild(instance.transform, "EjectionPoint");
+            Transform magazineTransform = FindDeepChild(instance.transform, "reciver1_low.005_3_0") ??
+                                          FindDeepChild(instance.transform, "reciver1_low.005");
 
             if (ejectionPoint != null)
             {
                 ejectionPoint.rotation = recoilPivot.rotation;
             }
 
-            // Wire RifleVisualEffects (lighting-aware muzzle flash + URP light + gunpowder smoke)
+            // Wire RifleVisualEffects (lighting-aware 2x2 atlas muzzle flash + forward SpotLight + single smoke cloud)
             RifleVisualEffects vfx = recoilPivot.GetComponent<RifleVisualEffects>();
             if (vfx == null)
                 vfx = recoilPivot.gameObject.AddComponent<RifleVisualEffects>();
 
-            Material sideFlashMat = BuildMuzzleFlashMaterial("MuzzleFlash_Side", 1f);
-            Material starFlashMat = BuildMuzzleFlashMaterial("MuzzleFlash_Star", 0f);
+            Material flashPlumeMat = BuildMuzzleFlashMaterial("MuzzleFlash_3D", "MuzzleFlash_Plume.png", 0.85f);
+            Material flashCrownMat = BuildMuzzleFlashMaterial("MuzzleFlash_Crown", "MuzzleFlash_Crown.png", 1.0f);
             Material smokeMat = BuildSmokeMaterial();
+            Transform flashRoot = BuildOrReplaceMuzzleFlash3D(muzzleTransform, flashPlumeMat, flashCrownMat);
+            Light flashSpotLight = BuildOrReplaceMuzzleSpotLight(muzzleTransform);
+
+            // Clean up any legacy runtime-created children left under Muzzle
+            string[] legacyVfxChildren = { "MuzzleFlashVisual", "MuzzlePowderSparks", "MuzzleGasJet", "BarrelHotWisp", "MuzzleSmokeCloud" };
+            foreach (string childName in legacyVfxChildren)
+            {
+                Transform stale = muzzleTransform.Find(childName);
+                if (stale != null) Object.DestroyImmediate(stale.gameObject);
+            }
 
             SerializedObject vfxSo = new SerializedObject(vfx);
             vfxSo.FindProperty("muzzleTransform").objectReferenceValue = muzzleTransform;
             vfxSo.FindProperty("ejectionPoint").objectReferenceValue = ejectionPoint;
-            vfxSo.FindProperty("sideFlashMaterial").objectReferenceValue = sideFlashMat;
-            vfxSo.FindProperty("starFlashMaterial").objectReferenceValue = starFlashMat;
+            vfxSo.FindProperty("muzzlePointLight").objectReferenceValue = flashSpotLight;
+            vfxSo.FindProperty("flashRootTransform").objectReferenceValue = flashRoot;
+            vfxSo.FindProperty("flash3DMaterial").objectReferenceValue = flashPlumeMat;
+            vfxSo.FindProperty("flashCrownMaterial").objectReferenceValue = flashCrownMat;
             vfxSo.FindProperty("smokeMaterial").objectReferenceValue = smokeMat;
+            vfxSo.FindProperty("flashDurationSec").floatValue = 0.040f;
+            vfxSo.FindProperty("daylightFlashIntensity").floatValue = 0.22f;
+            vfxSo.FindProperty("duskFlashIntensity").floatValue = 1.05f;
+            vfxSo.FindProperty("nightFlashIntensity").floatValue = 2.55f;
+            vfxSo.FindProperty("daylightLightIntensity").floatValue = 0.0f;
+            vfxSo.FindProperty("duskLightIntensity").floatValue = 2.8f;
+            vfxSo.FindProperty("nightLightIntensity").floatValue = 12.0f;
+            vfxSo.FindProperty("flashLightRange").floatValue = 7.5f;
+            vfxSo.FindProperty("flashLightColor").colorValue = new Color(1f, 0.74f, 0.32f, 1f);
+            vfxSo.FindProperty("flashSizeScale").floatValue = 1.0f;
+            vfxSo.FindProperty("enableGunpowderSmoke").boolValue = true;
+            vfxSo.FindProperty("cloudPuffsPerShot").intValue = 10;
+            vfxSo.FindProperty("cloudColor").colorValue = new Color(0.76f, 0.79f, 0.83f, 0.115f);
             vfxSo.ApplyModifiedPropertiesWithoutUndo();
 
             RifleMechanismController mech = recoilPivot.GetComponent<RifleMechanismController>();
@@ -221,6 +249,7 @@ namespace VRAtis.EditorTools
             mechSo.FindProperty("boltCarrierTransform").objectReferenceValue = boltCarrier;
             mechSo.FindProperty("dustCoverTransform").objectReferenceValue = dustCover;
             mechSo.FindProperty("ejectionPoint").objectReferenceValue = ejectionPoint;
+            mechSo.FindProperty("magazineTransform").objectReferenceValue = magazineTransform;
             mechSo.FindProperty("casingPrefab").objectReferenceValue = casingPrefab;
             if (boltCarrier != null && boltCarrier.parent != null)
             {
@@ -232,6 +261,11 @@ namespace VRAtis.EditorTools
                 Vector3 dcAxis = dustCover.parent.InverseTransformDirection(-recoilPivot.forward).normalized;
                 mechSo.FindProperty("dustCoverHingeAxis").vector3Value = dcAxis;
             }
+            if (magazineTransform != null && magazineTransform.parent != null)
+            {
+                Vector3 magDownAxis = magazineTransform.parent.InverseTransformDirection(-recoilPivot.up).normalized;
+                mechSo.FindProperty("magSlideLocalAxis").vector3Value = magDownAxis;
+            }
             mechSo.ApplyModifiedPropertiesWithoutUndo();
 
             RifleWeapon weapon = playerRifle.GetComponent<RifleWeapon>();
@@ -240,6 +274,8 @@ namespace VRAtis.EditorTools
                 SerializedObject weaponSo = new SerializedObject(weapon);
                 weaponSo.FindProperty("muzzleTransform").objectReferenceValue = muzzleTransform;
                 weaponSo.FindProperty("recoilPivot").objectReferenceValue = recoilPivot;
+                weaponSo.FindProperty("mechanismController").objectReferenceValue = mech;
+                weaponSo.FindProperty("magazineCapacity").intValue = 30;
                 weaponSo.ApplyModifiedPropertiesWithoutUndo();
 
                 EnsurePersistentListener(weapon.onWeaponFired, vfx, nameof(RifleVisualEffects.PlayMuzzleFlash));
@@ -483,7 +519,66 @@ namespace VRAtis.EditorTools
                 UnityEventTools.AddPersistentListener(evt, mech.OnWeaponFired);
         }
 
-        private static Material BuildMuzzleFlashMaterial(string matName, float sideFinMode)
+        private static Light BuildOrReplaceMuzzleSpotLight(Transform muzzleTransform)
+        {
+            if (muzzleTransform == null)
+                return null;
+
+            Transform old = muzzleTransform.Find("MuzzleFlashLight");
+            if (old != null)
+                Object.DestroyImmediate(old.gameObject);
+
+            GameObject lightGo = new GameObject("MuzzleFlashLight");
+            lightGo.transform.SetParent(muzzleTransform, false);
+            lightGo.transform.localPosition = new Vector3(0f, 0f, 0.16f);
+            lightGo.transform.localRotation = Quaternion.identity;
+
+            Light spot = lightGo.AddComponent<Light>();
+            spot.type = LightType.Spot;
+            spot.spotAngle = 115f;
+            spot.innerSpotAngle = 55f;
+            spot.range = 7.5f;
+            spot.color = new Color(1f, 0.74f, 0.32f, 1f);
+            spot.intensity = 0f;
+            spot.shadows = LightShadows.None;
+            spot.enabled = false;
+            return spot;
+        }
+
+        private static Transform BuildOrReplaceMuzzleFlash3D(Transform muzzleTransform, Material plumeMat, Material crownMat)
+        {
+            if (muzzleTransform == null)
+                return null;
+
+            Transform old = muzzleTransform.Find("MuzzleFlashVisual3D");
+            if (old != null)
+                Object.DestroyImmediate(old.gameObject);
+
+            GameObject flashPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(MuzzleFlashFbxPath);
+            if (flashPrefab == null)
+                return null;
+
+            GameObject go = (GameObject)PrefabUtility.InstantiatePrefab(flashPrefab, muzzleTransform);
+            go.name = "MuzzleFlashVisual3D";
+            go.transform.localPosition = new Vector3(0f, 0f, 0.004f);
+            go.transform.localRotation = Quaternion.identity;
+            go.transform.localScale = Vector3.one;
+
+            foreach (MeshRenderer mr in go.GetComponentsInChildren<MeshRenderer>(true))
+            {
+                bool isCrown = mr.gameObject.name.Contains("Crown");
+                mr.sharedMaterial = isCrown ? crownMat : plumeMat;
+                mr.shadowCastingMode = ShadowCastingMode.Off;
+                mr.receiveShadows = false;
+                Collider c = mr.GetComponent<Collider>();
+                if (c != null) Object.DestroyImmediate(c);
+            }
+
+            go.SetActive(false);
+            return go.transform;
+        }
+
+        private static Material BuildMuzzleFlashMaterial(string matName, string texFileName, float viewFade)
         {
             string matPath = $"{MatFolderPath}/{matName}.mat";
             Shader shader = Shader.Find("VRAtis/MuzzleFlashURP");
@@ -500,9 +595,41 @@ namespace VRAtis.EditorTools
             {
                 mat.shader = shader;
             }
-            mat.SetFloat("_IsSideFin", sideFinMode);
+
+            Texture2D tex = LoadConfiguredVfxTexture($"{TexFolderPath}/{texFileName}", 512);
+            if (tex != null)
+                mat.SetTexture("_MainTex", tex);
+            mat.SetColor("_TintColor", new Color(1.45f, 1.35f, 1.15f, 1.0f));
+            mat.SetFloat("_ViewFade", viewFade);
             EditorUtility.SetDirty(mat);
             return mat;
+        }
+
+        private static Texture2D LoadConfiguredVfxTexture(string assetPath, int maxSize)
+        {
+            TextureImporter importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;
+            if (importer != null)
+            {
+                bool dirty = false;
+                if (importer.wrapMode != TextureWrapMode.Clamp)
+                {
+                    importer.wrapMode = TextureWrapMode.Clamp;
+                    dirty = true;
+                }
+                if (importer.alphaIsTransparency == false)
+                {
+                    importer.alphaIsTransparency = true;
+                    dirty = true;
+                }
+                if (importer.maxTextureSize > maxSize)
+                {
+                    importer.maxTextureSize = maxSize;
+                    dirty = true;
+                }
+                if (dirty)
+                    importer.SaveAndReimport();
+            }
+            return AssetDatabase.LoadAssetAtPath<Texture2D>(assetPath);
         }
 
         private static Material BuildSmokeMaterial()
@@ -522,6 +649,10 @@ namespace VRAtis.EditorTools
             {
                 mat.shader = shader;
             }
+
+            Texture2D cloudTex = LoadConfiguredVfxTexture($"{TexFolderPath}/GunpowderCloud.png", 256);
+            if (cloudTex != null)
+                mat.SetTexture("_BaseMap", cloudTex);
 
             mat.SetFloat("_Surface", 1f);
             mat.SetFloat("_Blend", 0f);
