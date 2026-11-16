@@ -1,0 +1,47 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: AlpineCloudsSkybox
+  m_Shader: {fileID: 4800000, guid: 1af781fcbc5051b4d875520c4541783b, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _CloudTex:
+        m_Texture: {fileID: 2800000, guid: 2cb58079f852a8f4f916aac1065da848, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _CirrusOpacity: 0.36
+    - _CirrusScale: 0.14
+    - _CloudSoftness: 0.24
+    - _CloudThreshold: 0.44
+    - _CumulusOpacity: 0.94
+    - _CumulusScale: 0.22
+    - _StarIntensity: 1
+    m_Colors:
+    - _FallbackCloudLit: {r: 1, g: 0.97999996, b: 0.95, a: 1}
+    - _FallbackCloudShadow: {r: 0.5, g: 0.59, b: 0.72, a: 1}
+    - _FallbackGround: {r: 0.27999997, g: 0.31999996, b: 0.34999996, a: 1}
+    - _FallbackHorizon: {r: 0.6399999, g: 0.77, b: 0.9, a: 1}
+    - _FallbackSunDir: {r: -0.25, g: 0.38, b: -0.89, a: 0}
+    - _FallbackZenith: {r: 0.13999996, g: 0.35999998, b: 0.72, a: 1}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

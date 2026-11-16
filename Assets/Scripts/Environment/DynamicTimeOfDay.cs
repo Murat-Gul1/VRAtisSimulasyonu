@@ -45,6 +45,24 @@ namespace VRAtis.Environment
         [SerializeField] private Color goldenFogColor = new Color(0.75f, 0.56f, 0.44f);
         [SerializeField] private Color nightFogColor = new Color(0.05f, 0.08f, 0.14f);
 
+        [Header("Dinamik Gökyüzü ve Bulut Akışı")]
+        [SerializeField] private Vector2 baseCloudDriftSpeed = new Vector2(0.00045f, 0.00020f);
+        [SerializeField] private float cloudWindSpeedMultiplier = 0.00022f;
+
+        private static readonly int SkyActiveId = Shader.PropertyToID("_VRAtisSkyActive");
+        private static readonly int SkyDaylightId = Shader.PropertyToID("_VRAtisSkyDaylight");
+        private static readonly int SkyGoldenMixId = Shader.PropertyToID("_VRAtisSkyGoldenMix");
+        private static readonly int SkySunDirId = Shader.PropertyToID("_VRAtisSkySunDir");
+        private static readonly int SkySunColorId = Shader.PropertyToID("_VRAtisSkySunColor");
+        private static readonly int SkyZenithColorId = Shader.PropertyToID("_VRAtisSkyZenithColor");
+        private static readonly int SkyHorizonColorId = Shader.PropertyToID("_VRAtisSkyHorizonColor");
+        private static readonly int SkyGroundColorId = Shader.PropertyToID("_VRAtisSkyGroundColor");
+        private static readonly int SkyCloudLitColorId = Shader.PropertyToID("_VRAtisSkyCloudLitColor");
+        private static readonly int SkyCloudShadowColorId = Shader.PropertyToID("_VRAtisSkyCloudShadowColor");
+        private static readonly int SkyWindOffsetId = Shader.PropertyToID("_VRAtisSkyWindOffset");
+
+        private Vector2 _cloudWindOffset = new Vector2(0.12f, 0.08f);
+
         private void Awake()
         {
             FindSunLightIfMissing();
@@ -77,6 +95,12 @@ namespace VRAtis.Environment
                 {
                     timeOfDayHours = Mathf.Repeat(timeOfDayHours + hoursPerSecond * Time.deltaTime, 24f);
                 }
+
+                Vector3 envWind = EnvironmentManager.Instance != null ? EnvironmentManager.Instance.windSpeedMS : Vector3.zero;
+                Vector2 windDrift = baseCloudDriftSpeed + new Vector2(envWind.x, envWind.z) * cloudWindSpeedMultiplier;
+                _cloudWindOffset += windDrift * Time.deltaTime;
+                _cloudWindOffset.x = Mathf.Repeat(_cloudWindOffset.x, 100f);
+                _cloudWindOffset.y = Mathf.Repeat(_cloudWindOffset.y, 100f);
             }
 
             ApplyTimeOfDay();
@@ -154,12 +178,13 @@ namespace VRAtis.Environment
             RenderSettings.ambientEquatorColor = eqAmb;
             RenderSettings.ambientGroundColor = grdAmb;
 
+            Color fogCol = Color.Lerp(nightFogColor, dayFogColor, daylight);
+            fogCol = Color.Lerp(fogCol, goldenFogColor, goldenMix * 0.75f);
+
             if (controlFog)
             {
                 RenderSettings.fog = true;
                 RenderSettings.fogMode = FogMode.ExponentialSquared;
-                Color fogCol = Color.Lerp(nightFogColor, dayFogColor, daylight);
-                fogCol = Color.Lerp(fogCol, goldenFogColor, goldenMix * 0.75f);
                 RenderSettings.fogColor = fogCol;
                 RenderSettings.fogDensity = daylight > 0.15f
                     ? Mathf.Lerp(duskFogDensity, dayFogDensity, daylight)
@@ -171,6 +196,32 @@ namespace VRAtis.Environment
                 EnvironmentManager.Instance.daylightFactor = daylight;
                 EnvironmentManager.Instance.isNight = daylight <= 0.15f;
             }
+
+            // Sync skybox & volumetric cloud lighting cleanly without dirtying material assets
+            Vector3 skySunDir = isDay
+                ? -sunLight.transform.forward
+                : (Quaternion.Euler(-15f, yawDeg, 0f) * Vector3.back);
+
+            Color zenithCol = Color.Lerp(new Color(0.015f, 0.025f, 0.055f), new Color(0.12f, 0.34f, 0.72f), daylight);
+            zenithCol = Color.Lerp(zenithCol, new Color(0.15f, 0.24f, 0.48f), goldenMix * 0.65f);
+
+            Color cloudLit = Color.Lerp(new Color(0.15f, 0.20f, 0.32f), new Color(1.04f, 1.02f, 0.98f), daylight);
+            cloudLit = Color.Lerp(cloudLit, new Color(1.06f, 0.68f, 0.40f), goldenMix * 0.85f);
+
+            Color cloudShadow = Color.Lerp(new Color(0.04f, 0.06f, 0.11f), new Color(0.46f, 0.56f, 0.70f), daylight);
+            cloudShadow = Color.Lerp(cloudShadow, new Color(0.38f, 0.30f, 0.42f), goldenMix * 0.75f);
+
+            Shader.SetGlobalFloat(SkyActiveId, 1.0f);
+            Shader.SetGlobalFloat(SkyDaylightId, daylight);
+            Shader.SetGlobalFloat(SkyGoldenMixId, goldenMix);
+            Shader.SetGlobalVector(SkySunDirId, new Vector4(skySunDir.x, skySunDir.y, skySunDir.z, 0f));
+            Shader.SetGlobalColor(SkySunColorId, sunCol);
+            Shader.SetGlobalColor(SkyZenithColorId, zenithCol);
+            Shader.SetGlobalColor(SkyHorizonColorId, fogCol);
+            Shader.SetGlobalColor(SkyGroundColorId, grdAmb);
+            Shader.SetGlobalColor(SkyCloudLitColorId, cloudLit);
+            Shader.SetGlobalColor(SkyCloudShadowColorId, cloudShadow);
+            Shader.SetGlobalVector(SkyWindOffsetId, new Vector4(_cloudWindOffset.x, _cloudWindOffset.y, 0f, 0f));
         }
     }
 }

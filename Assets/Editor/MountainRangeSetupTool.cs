@@ -14,8 +14,9 @@ namespace VRAtis.EditorTools
         private const string AraratFbxPath = "Assets/Models/Environment/Mountains/Mountain_AraratPeak.fbx";
         private const string MountainTexDir = "Assets/Models/Environment/Mountains/Textures";
         private const string GroundTexDir = "Assets/Models/Environment/Ground/Textures";
+        private const string SkyTexPath = "Assets/Models/Environment/Sky/AlpineClouds_Tile.png";
         private const string EnvMatDir = "Assets/Materials/Environment";
-        private const string AutoSetupVersionKey = "VRAtis_Mountains_V2_Done";
+        private const string AutoSetupVersionKey = "VRAtis_Mountains_V5_Done";
 
         static MountainRangeSetupTool()
         {
@@ -184,13 +185,26 @@ namespace VRAtis.EditorTools
                 new Vector3(12.5f, 12.0f, 12.5f),
                 castShadows: true);
 
-            // 5. Attach & configure DynamicTimeOfDay on EnvironmentManager
+            // 5. Setup Alpine Skybox with dynamic multi-layer clouds
+            Material skyMat = BuildAlpineSkyboxMaterial();
+            if (skyMat != null)
+            {
+                RenderSettings.skybox = skyMat;
+                DynamicGI.UpdateEnvironment();
+            }
+
+            // 6. Attach & configure DynamicTimeOfDay on EnvironmentManager
             GameObject envMgr = GameObject.Find("EnvironmentManager");
             if (envMgr != null)
             {
                 DynamicTimeOfDay tod = envMgr.GetComponent<DynamicTimeOfDay>();
                 if (tod == null)
                     tod = envMgr.AddComponent<DynamicTimeOfDay>();
+
+                SerializedObject todSo = new SerializedObject(tod);
+                todSo.FindProperty("baseCloudDriftSpeed").vector2Value = new Vector2(0.00045f, 0.00020f);
+                todSo.FindProperty("cloudWindSpeedMultiplier").floatValue = 0.00022f;
+                todSo.ApplyModifiedPropertiesWithoutUndo();
 
                 tod.SetTimeOfDay(16.45f);
                 EditorUtility.SetDirty(tod);
@@ -299,6 +313,74 @@ namespace VRAtis.EditorTools
             mat.SetColor("_BaseColor", new Color(1.22f, 1.24f, 1.10f, 1f));
             mat.SetFloat("_Metallic", 0f);
             mat.SetFloat("_Smoothness", 0.04f);
+            EditorUtility.SetDirty(mat);
+            return mat;
+        }
+
+        private static Material BuildAlpineSkyboxMaterial()
+        {
+            string matPath = $"{EnvMatDir}/AlpineCloudsSkybox.mat";
+            Shader skyShader = Shader.Find("VRAtis/AlpineCloudsSkybox");
+            if (skyShader == null)
+                skyShader = AssetDatabase.LoadAssetAtPath<Shader>("Assets/Shaders/AlpineCloudsSkybox.shader");
+            if (skyShader == null)
+                return null;
+
+            Material mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+            if (mat == null)
+            {
+                mat = new Material(skyShader);
+                AssetDatabase.CreateAsset(mat, matPath);
+            }
+            else
+            {
+                mat.shader = skyShader;
+            }
+
+            TextureImporter importer = AssetImporter.GetAtPath(SkyTexPath) as TextureImporter;
+            if (importer != null)
+            {
+                bool dirty = false;
+                if (importer.wrapMode != TextureWrapMode.Repeat)
+                {
+                    importer.wrapMode = TextureWrapMode.Repeat;
+                    dirty = true;
+                }
+                if (importer.sRGBTexture)
+                {
+                    importer.sRGBTexture = false;
+                    dirty = true;
+                }
+                if (importer.maxTextureSize != 1024)
+                {
+                    importer.maxTextureSize = 1024;
+                    dirty = true;
+                }
+                if (importer.textureCompression != TextureImporterCompression.Uncompressed)
+                {
+                    importer.textureCompression = TextureImporterCompression.Uncompressed;
+                    dirty = true;
+                }
+                if (importer.filterMode != FilterMode.Bilinear)
+                {
+                    importer.filterMode = FilterMode.Bilinear;
+                    dirty = true;
+                }
+                if (dirty)
+                    importer.SaveAndReimport();
+            }
+
+            Texture2D cloudTex = AssetDatabase.LoadAssetAtPath<Texture2D>(SkyTexPath);
+            if (cloudTex != null)
+                mat.SetTexture("_CloudTex", cloudTex);
+
+            mat.SetFloat("_CumulusScale", 0.22f);
+            mat.SetFloat("_CirrusScale", 0.14f);
+            mat.SetFloat("_CloudThreshold", 0.44f);
+            mat.SetFloat("_CloudSoftness", 0.24f);
+            mat.SetFloat("_CumulusOpacity", 0.94f);
+            mat.SetFloat("_CirrusOpacity", 0.36f);
+            mat.SetFloat("_StarIntensity", 1.0f);
             EditorUtility.SetDirty(mat);
             return mat;
         }
