@@ -6,8 +6,9 @@ using UnityEngine.InputSystem;
 namespace VRAtis.Hardware
 {
     /// <summary>
-    /// Converts the ESP32 Madgwick quaternion into Unity's left-handed coordinate space
-    /// and aligns horizontal Yaw to the player's forward view while preserving gravity Pitch and Roll.
+    /// Converts the ESP32 Madgwick quaternion into Unity's left-handed coordinate space,
+    /// bridges brief 2.4 GHz Wi-Fi packet gaps using short-horizon angular velocity dead-reckoning,
+    /// and applies a 1-Euro style velocity-adaptive filter for stutter-free, zero-lag tracking.
     /// </summary>
     public class RifleOrientationController : MonoBehaviour
     {
@@ -46,12 +47,38 @@ namespace VRAtis.Hardware
         [Header("Nişan Sıfırlama (Yaw Zeroing)")]
         [SerializeField] private bool autoZeroYawOnFirstPacket = true;
 
-        [Header("Yumuşatma (Keskin 1:1 tepki için 0 bırakın)")]
-        [Range(0f, 60f)]
-        [SerializeField] private float smoothingSpeed = 0f;
+        [Header("Wi-Fi Paket Boşluğu Tahminleyici (Dead-Reckoning)")]
+        [Tooltip("2.4 GHz Wi-Fi paketleri 10-30 ms geciktiğinde tüfeğin donmasını önlemek için açısal hızla ara kareleri doldurur.")]
+        [SerializeField] private bool enableWifiGapPrediction = true;
+
+        [Tooltip("Maksimum ileri tahmin süresi (ms). 2.4 GHz modemdeki 45-75 ms'lik mikro-gecikmeleri sarsıntısız kapatır.")]
+        [Range(0f, 90f)]
+        [SerializeField] private float maxPredictionMs = 65f;
+
+        [Header("Hıza Duyarlı Akıllı Yumuşatma (1-Euro Adaptive Slerp)")]
+        [Tooltip("Yavaş nişanda Wi-Fi paket adımlarını ütüler, hızlı dönüşte gecikmeyi sıfıra indirir.")]
+        [SerializeField] private bool enableAdaptiveSmoothing = true;
+
+        [Tooltip("Yavaş hareketlerde taban yumuşatma hızı (yüksek = daha keskin, düşük = daha pürüzsüz).")]
+        [Range(10f, 60f)]
+        [SerializeField] private float minSmoothingSpeed = 32f;
+
+        [Tooltip("Hızlı dönüşlerde maksimum yumuşatma hızı (anında tepki için yüksek tutun).")]
+        [Range(40f, 150f)]
+        [SerializeField] private float maxSmoothingSpeed = 95f;
+
+        [Tooltip("Tam hıza geçiş açısal hızı (derece/sn).")]
+        [SerializeField] private float fastTurnSpeedDegPerSec = 90f;
 
         private Quaternion _yawCalibrationOffset = Quaternion.identity;
         private bool _hasAutoZeroed;
+
+        // Dead-reckoning state
+        private uint _lastPacketSeq;
+        private Quaternion _lastCalibratedPacketRot = Quaternion.identity;
+        private float _elapsedSinceLastDistinctPacket;
+        private Vector3 _estimatedAngularAxis = Vector3.up;
+        private float _estimatedAngularSpeedDegPerSec;
 
         private void Awake()
         {
@@ -74,23 +101,83 @@ namespace VRAtis.Hardware
             if (receiver == null || !receiver.IsConnected)
                 return;
 
+            _elapsedSinceLastDistinctPacket += Time.unscaledDeltaTime;
+
             Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
 
             if (autoZeroYawOnFirstPacket && !_hasAutoZeroed)
             {
                 _hasAutoZeroed = true;
                 ApplyYawCalibration(converted);
+                Quaternion initialRot = _yawCalibrationOffset * converted;
+                _lastCalibratedPacketRot = initialRot;
+                _lastPacketSeq = receiver.PacketSequence;
+                _elapsedSinceLastDistinctPacket = 0f;
+                transform.rotation = initialRot;
+                return;
             }
 
-            Quaternion targetRotation = _yawCalibrationOffset * converted;
+            Quaternion calibratedPacketRot = _yawCalibrationOffset * converted;
 
-            if (smoothingSpeed <= 0f)
+            // Update angular velocity estimate when a new distinct packet arrives
+            if (receiver.PacketSequence != _lastPacketSeq)
+            {
+                _lastPacketSeq = receiver.PacketSequence;
+                Quaternion deltaQ = calibratedPacketRot * Quaternion.Inverse(_lastCalibratedPacketRot);
+                deltaQ.ToAngleAxis(out float deltaAngleDeg, out Vector3 deltaAxis);
+
+                if (deltaAngleDeg > 180f)
+                {
+                    deltaAngleDeg = 360f - deltaAngleDeg;
+                    deltaAxis = -deltaAxis;
+                }
+
+                if (deltaAngleDeg > 0.0005f && _elapsedSinceLastDistinctPacket > 0.001f)
+                {
+                    float dt = Mathf.Clamp(_elapsedSinceLastDistinctPacket, 0.003f, 0.1f);
+                    float instantSpeed = Mathf.Clamp(deltaAngleDeg / dt, 0f, 720f);
+
+                    // Fast EMA on angular speed and axis
+                    _estimatedAngularSpeedDegPerSec = Mathf.Lerp(_estimatedAngularSpeedDegPerSec, instantSpeed, 0.55f);
+                    if (deltaAxis.sqrMagnitude > 1e-4f)
+                    {
+                        _estimatedAngularAxis = deltaAxis.normalized;
+                    }
+
+                    _lastCalibratedPacketRot = calibratedPacketRot;
+                    _elapsedSinceLastDistinctPacket = 0f;
+                }
+            }
+
+            Quaternion targetRotation = calibratedPacketRot;
+
+            // Short-horizon Dead Reckoning when Wi-Fi delays a packet by > 6ms
+            if (enableWifiGapPrediction && maxPredictionMs > 0f && _estimatedAngularSpeedDegPerSec > 1.5f)
+            {
+                float ageSec = receiver.PacketAgeSeconds;
+                // Only extrapolate beyond the normal 5ms packet interval, capped at maxPredictionMs
+                float extrapolateSec = Mathf.Clamp(ageSec - 0.005f, 0f, maxPredictionMs * 0.001f);
+                if (extrapolateSec > 0f)
+                {
+                    // Decay velocity slightly over the prediction horizon to avoid overshoot on sudden stops
+                    float decay = Mathf.Exp(-extrapolateSec * 25f);
+                    float predAngle = _estimatedAngularSpeedDegPerSec * extrapolateSec * decay;
+                    targetRotation = Quaternion.AngleAxis(predAngle, _estimatedAngularAxis) * calibratedPacketRot;
+                }
+            }
+
+            if (!enableAdaptiveSmoothing)
             {
                 transform.rotation = targetRotation;
             }
             else
             {
-                float t = 1f - Mathf.Exp(-smoothingSpeed * Time.unscaledDeltaTime);
+                float angularDiffDeg = Quaternion.Angle(transform.rotation, targetRotation);
+                float effectiveSpeed = Mathf.Max(_estimatedAngularSpeedDegPerSec, angularDiffDeg * 30f);
+                float speedFactor = Mathf.Clamp01(effectiveSpeed / Mathf.Max(10f, fastTurnSpeedDegPerSec));
+                float adaptiveCutoff = Mathf.Lerp(minSmoothingSpeed, maxSmoothingSpeed, speedFactor);
+
+                float t = 1f - Mathf.Exp(-adaptiveCutoff * Time.unscaledDeltaTime);
                 transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, t);
             }
         }
@@ -106,6 +193,9 @@ namespace VRAtis.Hardware
 
             Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
             ApplyYawCalibration(converted);
+            _lastCalibratedPacketRot = _yawCalibrationOffset * converted;
+            _estimatedAngularSpeedDegPerSec = 0f;
+            transform.rotation = _lastCalibratedPacketRot;
             Debug.Log("[RifleOrientationController] Tüfek yönü görüş hattına sıfırlandı.");
         }
 

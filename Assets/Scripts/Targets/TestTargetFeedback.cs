@@ -4,25 +4,63 @@ using VRAtis.Ballistics;
 namespace VRAtis.Targets
 {
     /// <summary>
-    /// Simple visual feedback on test targets: spawns a persistent hit marker and briefly flashes color.
+    /// Zero-allocation visual feedback on test targets: uses MaterialPropertyBlock for flash
+    /// and a pre-allocated ring buffer of hit markers so rapid firing never causes GC spikes.
     /// </summary>
     public class TestTargetFeedback : MonoBehaviour, IBulletImpactTarget
     {
+        private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+        private static readonly int ColorId = Shader.PropertyToID("_Color");
+
         [SerializeField] private Color hitFlashColor = new Color(1f, 0.25f, 0.1f, 1f);
-        [SerializeField] private float flashDurationSec = 0.18f;
-        [SerializeField] private int maxHitMarkers = 30;
+        [SerializeField] private float flashDurationSec = 0.15f;
+        [SerializeField] private int maxHitMarkers = 24;
 
         private Renderer _renderer;
+        private MaterialPropertyBlock _propBlock;
         private Color _originalColor = Color.white;
         private float _flashTimer;
-        private int _markerCount;
+
+        private Transform[] _markerRingBuffer;
+        private int _nextMarkerIndex;
         private static Material _sharedMarkerMaterial;
 
         private void Awake()
         {
             _renderer = GetComponent<Renderer>();
-            if (_renderer != null && _renderer.material != null)
-                _originalColor = _renderer.material.color;
+            _propBlock = new MaterialPropertyBlock();
+
+            if (_renderer != null && _renderer.sharedMaterial != null)
+            {
+                if (_renderer.sharedMaterial.HasProperty(BaseColorId))
+                    _originalColor = _renderer.sharedMaterial.GetColor(BaseColorId);
+                else if (_renderer.sharedMaterial.HasProperty(ColorId))
+                    _originalColor = _renderer.sharedMaterial.GetColor(ColorId);
+            }
+
+            PrewarmMarkers();
+        }
+
+        private void PrewarmMarkers()
+        {
+            _markerRingBuffer = new Transform[Mathf.Max(1, maxHitMarkers)];
+            Material mat = GetMarkerMaterial();
+
+            for (int i = 0; i < _markerRingBuffer.Length; i++)
+            {
+                GameObject mark = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                mark.name = $"HitMark_{i}";
+                Collider col = mark.GetComponent<Collider>();
+                if (col != null) Destroy(col);
+
+                mark.transform.SetParent(transform, true);
+                mark.transform.localScale = Vector3.one * 0.06f;
+                if (mat != null)
+                    mark.GetComponent<MeshRenderer>().sharedMaterial = mat;
+
+                mark.SetActive(false);
+                _markerRingBuffer[i] = mark.transform;
+            }
         }
 
         private void Update()
@@ -31,7 +69,9 @@ namespace VRAtis.Targets
             {
                 _flashTimer -= Time.deltaTime;
                 if (_flashTimer <= 0f)
-                    _renderer.material.color = _originalColor;
+                {
+                    ApplyColor(_originalColor);
+                }
             }
         }
 
@@ -39,24 +79,26 @@ namespace VRAtis.Targets
         {
             if (_renderer != null)
             {
-                _renderer.material.color = hitFlashColor;
+                ApplyColor(hitFlashColor);
                 _flashTimer = flashDurationSec;
             }
 
-            if (_markerCount < maxHitMarkers)
+            if (_markerRingBuffer != null && _markerRingBuffer.Length > 0)
             {
-                _markerCount++;
-                GameObject mark = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                mark.name = "BulletHitMark";
-                Destroy(mark.GetComponent<Collider>());
-                mark.transform.position = impact.HitPoint + impact.HitNormal * 0.01f;
-                mark.transform.localScale = Vector3.one * 0.06f;
-                mark.transform.SetParent(transform, true);
+                Transform mark = _markerRingBuffer[_nextMarkerIndex];
+                _nextMarkerIndex = (_nextMarkerIndex + 1) % _markerRingBuffer.Length;
 
-                Material mat = GetMarkerMaterial();
-                if (mat != null)
-                    mark.GetComponent<MeshRenderer>().sharedMaterial = mat;
+                mark.position = impact.HitPoint + impact.HitNormal * 0.01f;
+                mark.gameObject.SetActive(true);
             }
+        }
+
+        private void ApplyColor(Color c)
+        {
+            _renderer.GetPropertyBlock(_propBlock);
+            _propBlock.SetColor(BaseColorId, c);
+            _propBlock.SetColor(ColorId, c);
+            _renderer.SetPropertyBlock(_propBlock);
         }
 
         private static Material GetMarkerMaterial()

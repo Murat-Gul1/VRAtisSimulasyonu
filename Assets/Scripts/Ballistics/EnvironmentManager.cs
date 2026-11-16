@@ -28,10 +28,15 @@ namespace VRAtis.Ballistics
         [Tooltip("Yükseklik metre başına rüzgar hızı artışı (m/s per m)")]
         public float windGradientPerMeter = 0.02f;
 
-        [Header("Hava Durumu Bayrakları")]
+        [Header("Hava Durumu ve Işık Durumu")]
         public bool isRaining;
         [Range(0f, 100f)]
         public float rainIntensityPercent = 50f;
+
+        [Tooltip("0 = Zifiri Gece, 0.35 = Alacakaranlık, 1 = Güneşli Gündüz (Namlu alevi ve ışık şiddetini kontrol eder).")]
+        [Range(0f, 1f)]
+        public float daylightFactor = 1.0f;
+
         public bool isNight;
 
         [Header("Hesaplanan Değerler (Sadece Okunur)")]
@@ -44,6 +49,7 @@ namespace VRAtis.Ballistics
         public float AltitudeMeters => altitudeMeters;
         public float CurrentAirDensity => currentAirDensity;
         public float CurrentSpeedOfSound => currentSpeedOfSound;
+        public float EffectiveDaylightFactor => isNight ? Mathf.Min(daylightFactor, 0.05f) : daylightFactor;
 
         private void Awake()
         {

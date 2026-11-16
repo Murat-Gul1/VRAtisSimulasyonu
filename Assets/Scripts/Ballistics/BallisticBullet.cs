@@ -26,7 +26,7 @@ namespace VRAtis.Ballistics
         [SerializeField] private float axialMomentOfInertia = 0.000015f;
 
         [Header("Sıfırlama (Zeroing) ve Geometri")]
-        [SerializeField] private float sightHeightCM = 5.08f;
+        [SerializeField] private float sightHeightCM = 7.05f;
         [SerializeField] private float zeroDistanceMeters = 100f;
 
         [Header("Terminal Balistik")]
@@ -111,7 +111,8 @@ namespace VRAtis.Ballistics
                 int cooldownShots = Mathf.FloorToInt(timeSinceLastShot / 3f);
                 GlobalShotCounter = Mathf.Max(0, GlobalShotCounter - cooldownShots);
             }
-            GlobalShotCounter++;
+            // Cap barrel thermal state at 12 rapid shots so muzzle velocity stays physically realistic
+            GlobalShotCounter = Mathf.Min(GlobalShotCounter + 1, 12);
             LastShotTime = Time.time;
 
             float harmonicShiftMOA = (GlobalShotCounter - 1) * 0.15f;
