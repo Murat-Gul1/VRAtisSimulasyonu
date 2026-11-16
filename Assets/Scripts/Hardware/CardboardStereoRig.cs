@@ -64,6 +64,7 @@ namespace VRAtis.Hardware
 
         private Camera _mainCam;
         private UniversalAdditionalCameraData _mainUrpData;
+        private Camera _backdropClearCam;
         private Camera _leftEyeCam;
         private Camera _rightEyeCam;
         private string _originalMainTag = "MainCamera";
@@ -77,7 +78,6 @@ namespace VRAtis.Hardware
         private int _lastScreenHeight;
         private float _cachedPhysicalWidthMm;
         private float _dynamicFovDeltaDeg;
-        private Texture2D _blackTex;
         private GUIStyle _calibBtnStyle;
 
         public float HalfVirtualIpdMeters => IsStereoSplitActive ? (virtualEyeIpdMm * 0.001f) * 0.5f : 0f;
@@ -154,11 +154,6 @@ namespace VRAtis.Hardware
 
         private void OnDestroy()
         {
-            if (_blackTex != null)
-            {
-                Destroy(_blackTex);
-                _blackTex = null;
-            }
             if (IsStereoSplitActive)
                 IsStereoSplitActive = false;
         }
@@ -238,6 +233,12 @@ namespace VRAtis.Hardware
                 _leftEyeCam.gameObject.tag = string.IsNullOrEmpty(_originalMainTag) ? "MainCamera" : _originalMainTag;
                 _rightEyeCam.gameObject.tag = "Untagged";
 
+                if (_backdropClearCam != null)
+                {
+                    _backdropClearCam.depth = _mainCam.depth - 10f;
+                    _backdropClearCam.enabled = drawBlackMaskBorders;
+                }
+
                 _leftEyeCam.enabled = true;
                 _rightEyeCam.enabled = true;
                 _mainCam.enabled = false;
@@ -295,13 +296,16 @@ namespace VRAtis.Hardware
             float phoneWidthMm = _cachedPhysicalWidthMm > 80f ? _cachedPhysicalWidthMm : fallbackPhoneWidthMm;
             DetectedPhoneWidthMm = phoneWidthMm;
 
-            float eyeWidthNorm = Mathf.Clamp(lensCenterSpacingMm / Mathf.Max(65f, phoneWidthMm), 0.25f, 0.5f);
-            leftRect = new Rect(0.5f - eyeWidthNorm, 0f, eyeWidthNorm, 1f);
-            rightRect = new Rect(0.5f, 0f, eyeWidthNorm, 1f);
+            float eyeWidthNorm = Mathf.Clamp(lensCenterSpacingMm / Mathf.Max(65f, phoneWidthMm), 0.25f, 0.498f);
+            float centerGapHalf = drawBlackMaskBorders ? 0.0012f : 0f;
+            leftRect = new Rect(0.5f - centerGapHalf - eyeWidthNorm, 0f, eyeWidthNorm, 1f);
+            rightRect = new Rect(0.5f + centerGapHalf, 0f, eyeWidthNorm, 1f);
         }
 
         private void RestoreSingleScreenState()
         {
+            if (_backdropClearCam != null)
+                _backdropClearCam.enabled = false;
             if (_leftEyeCam != null)
             {
                 _leftEyeCam.gameObject.tag = "Untagged";
@@ -322,6 +326,23 @@ namespace VRAtis.Hardware
 
         private void EnsureEyeCamerasCreated()
         {
+            if (_backdropClearCam == null)
+            {
+                _backdropClearCam = FindOrCreateEyeCamera("VR_BlackBackdropCamera");
+                _backdropClearCam.clearFlags = CameraClearFlags.SolidColor;
+                _backdropClearCam.backgroundColor = Color.black;
+                _backdropClearCam.cullingMask = 0;
+                _backdropClearCam.useOcclusionCulling = false;
+                _backdropClearCam.allowHDR = false;
+                _backdropClearCam.allowMSAA = false;
+                _backdropClearCam.rect = new Rect(0f, 0f, 1f, 1f);
+                UniversalAdditionalCameraData bdUrp = _backdropClearCam.GetComponent<UniversalAdditionalCameraData>();
+                if (bdUrp != null)
+                {
+                    bdUrp.renderShadows = false;
+                    bdUrp.renderPostProcessing = false;
+                }
+            }
             if (_leftEyeCam == null)
                 _leftEyeCam = FindOrCreateEyeCamera("VR_LeftEyeCamera");
             if (_rightEyeCam == null)
@@ -377,56 +398,31 @@ namespace VRAtis.Hardware
 
         private void OnGUI()
         {
-            if (!IsStereoSplitActive || !Application.isPlaying)
+            if (!IsStereoSplitActive || !Application.isPlaying || !allowLiveCalibrationButtons)
                 return;
 
-            if (drawBlackMaskBorders)
+            if (_calibBtnStyle == null)
             {
-                if (_blackTex == null)
+                _calibBtnStyle = new GUIStyle(GUI.skin.button)
                 {
-                    _blackTex = new Texture2D(1, 1);
-                    _blackTex.SetPixel(0, 0, Color.black);
-                    _blackTex.Apply();
-                }
-
-                float leftEdgePx = LeftEyeViewportNorm.xMin * Screen.width;
-                float rightEdgePx = RightEyeViewportNorm.xMax * Screen.width;
-
-                if (leftEdgePx > 1f)
-                    GUI.DrawTexture(new Rect(0f, 0f, leftEdgePx, Screen.height), _blackTex);
-
-                if (rightEdgePx < Screen.width - 1f)
-                    GUI.DrawTexture(new Rect(rightEdgePx, 0f, Screen.width - rightEdgePx, Screen.height), _blackTex);
-
-                float dividerWidth = 4f;
-                GUI.DrawTexture(new Rect((Screen.width - dividerWidth) * 0.5f, 0f, dividerWidth, Screen.height), _blackTex);
+                    fontSize = 15,
+                    fontStyle = FontStyle.Bold
+                };
             }
 
-            if (allowLiveCalibrationButtons)
-            {
-                if (_calibBtnStyle == null)
-                {
-                    _calibBtnStyle = new GUIStyle(GUI.skin.button)
-                    {
-                        fontSize = 15,
-                        fontStyle = FontStyle.Bold
-                    };
-                }
+            float btnW = 68f;
+            float btnH = 38f;
+            float yBottom = Screen.height - btnH - 22f;
+            float leftCenterX = (LeftEyeViewportNorm.x + LeftEyeViewportNorm.width * 0.5f) * Screen.width;
+            float rightCenterX = (RightEyeViewportNorm.x + RightEyeViewportNorm.width * 0.5f) * Screen.width;
 
-                float btnW = 68f;
-                float btnH = 38f;
-                float yBottom = Screen.height - btnH - 22f;
-                float leftCenterX = (LeftEyeViewportNorm.x + LeftEyeViewportNorm.width * 0.5f) * Screen.width;
-                float rightCenterX = (RightEyeViewportNorm.x + RightEyeViewportNorm.width * 0.5f) * Screen.width;
+            if (GUI.Button(new Rect(leftCenterX - btnW - 8f, yBottom, btnW, btnH), "-1 mm", _calibBtnStyle) ||
+                GUI.Button(new Rect(rightCenterX - btnW - 8f, yBottom, btnW, btnH), "-1 mm", _calibBtnStyle))
+                NudgeLensSpacingMm(-1f);
 
-                if (GUI.Button(new Rect(leftCenterX - btnW - 8f, yBottom, btnW, btnH), "-1 mm", _calibBtnStyle) ||
-                    GUI.Button(new Rect(rightCenterX - btnW - 8f, yBottom, btnW, btnH), "-1 mm", _calibBtnStyle))
-                    NudgeLensSpacingMm(-1f);
-
-                if (GUI.Button(new Rect(leftCenterX + 8f, yBottom, btnW, btnH), "+1 mm", _calibBtnStyle) ||
-                    GUI.Button(new Rect(rightCenterX + 8f, yBottom, btnW, btnH), "+1 mm", _calibBtnStyle))
-                    NudgeLensSpacingMm(+1f);
-            }
+            if (GUI.Button(new Rect(leftCenterX + 8f, yBottom, btnW, btnH), "+1 mm", _calibBtnStyle) ||
+                GUI.Button(new Rect(rightCenterX + 8f, yBottom, btnW, btnH), "+1 mm", _calibBtnStyle))
+                NudgeLensSpacingMm(+1f);
         }
     }
 }

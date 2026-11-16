@@ -106,10 +106,25 @@ namespace VRAtis.Environment
             ApplyTimeOfDay();
         }
 
+        public float CurrentTimeOfDayHours => timeOfDayHours;
+        public bool AutoAdvanceTime => autoAdvanceTime;
+
         public void SetTimeOfDay(float hours)
         {
             timeOfDayHours = Mathf.Repeat(hours, 24f);
             ApplyTimeOfDay();
+        }
+
+        public void ApplyTimePreset(float hours)
+        {
+            timeOfDayHours = Mathf.Repeat(hours, 24f);
+            autoAdvanceTime = false;
+            ApplyTimeOfDay();
+        }
+
+        public void SetAutoAdvanceTime(bool enabled)
+        {
+            autoAdvanceTime = enabled;
         }
 
         private void FindSunLightIfMissing()

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Events;
+using UnityEngine.EventSystems;
 using VRAtis.Ballistics;
 using VRAtis.Hardware;
 #if ENABLE_INPUT_SYSTEM
@@ -114,15 +115,18 @@ namespace VRAtis.Weapons
 
                 if (allowEditorTestFire && Application.isEditor)
                 {
+                    bool pointerOverUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
                     bool keyFire = Keyboard.current.spaceKey.wasPressedThisFrame;
-                    bool mouseFire = Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
+                    bool mouseFire = !pointerOverUi && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame;
                     if (keyFire || mouseFire)
                         Fire();
                 }
             }
-            else if (allowEditorTestFire && Application.isEditor && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+            else if (allowEditorTestFire && Application.isEditor)
             {
-                Fire();
+                bool pointerOverUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+                if (!pointerOverUi && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+                    Fire();
             }
 #endif
             UpdateReloadState(Time.deltaTime);
