@@ -10016,6 +10016,7 @@ GameObject:
   - component: {fileID: 677969394}
   - component: {fileID: 677969393}
   - component: {fileID: 677969396}
+  - component: {fileID: 677969397}
   m_Layer: 0
   m_Name: EnvironmentManager
   m_TagString: Untagged
@@ -10121,6 +10122,37 @@ MonoBehaviour:
   nightFogColor: {r: 0.05, g: 0.08, b: 0.14, a: 1}
   baseCloudDriftSpeed: {x: 0.00045, y: 0.0002}
   cloudWindSpeedMultiplier: 0.00022
+--- !u!114 &677969397
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 677969392}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ef7a63a5efd41b749bd4af5af0511d4e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Environment.WindAudioController
+  environmentManager: {fileID: 677969394}
+  headCameraTransform: {fileID: 330585546}
+  calmWindClips:
+  - {fileID: 8300000, guid: d84793468f14069449123ba428bc1a31, type: 3}
+  - {fileID: 8300000, guid: cceb78e884ab62940a4fe22ba7dc01b0, type: 3}
+  gustWindClips:
+  - {fileID: 8300000, guid: 164e8d5312f0ccb41af71ef29fb963f1, type: 3}
+  - {fileID: 8300000, guid: a060b91d27989cf45a84d6461b56e9ec, type: 3}
+  masterWindVolume: 0.22
+  calmLayerGain: 0.72
+  gustLayerGain: 0.95
+  calmStartSpeedMS: 0.2
+  calmFullSpeedMS: 6
+  gustStartSpeedMS: 4.2
+  gustFullSpeedMS: 13
+  enableNaturalGustWaves: 1
+  gustWaveAmplitude: 0.22
+  enableHeadDirectionBinaural: 1
+  maxWindStereoPan: 0.28
 --- !u!1001 &692927349
 PrefabInstance:
   m_ObjectHideFlags: 0
