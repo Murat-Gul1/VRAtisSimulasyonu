@@ -19,8 +19,9 @@ namespace VRAtis.EditorTools
         private const string MatFolderPath = "Assets/Materials/AR15";
         private const string PrefabFolderPath = "Assets/Prefabs";
         private const string CasingPrefabPath = "Assets/Prefabs/BrassCasing556.prefab";
+        private const string AudioFolderPath = "Assets/Audio/Weapons";
         private const string SetupInstanceName = "AR15_WithRedDot";
-        private const string AutoSetupVersionKey = "VRAtis_AR15_BakedV7_Done";
+        private const string AutoSetupVersionKey = "VRAtis_AR15_BakedV10_Done";
 
         static AR15SetupTool()
         {
@@ -268,6 +269,35 @@ namespace VRAtis.EditorTools
             }
             mechSo.ApplyModifiedPropertiesWithoutUndo();
 
+            // Wire RifleAudioController (gunshot audio pool at muzzle)
+            RifleAudioController audioCtrl = recoilPivot.GetComponent<RifleAudioController>();
+            if (audioCtrl == null)
+                audioCtrl = recoilPivot.gameObject.AddComponent<RifleAudioController>();
+
+            AudioClip shot01 = LoadConfiguredShotClip($"{AudioFolderPath}/AR15_Shot_01.wav");
+            AudioClip shot02 = LoadConfiguredShotClip($"{AudioFolderPath}/AR15_Shot_02.wav");
+            SerializedObject audioSo = new SerializedObject(audioCtrl);
+            audioSo.FindProperty("muzzleTransform").objectReferenceValue = muzzleTransform;
+            audioSo.FindProperty("shotVolume").floatValue = 1.0f;
+            audioSo.FindProperty("volumeVariation").vector2Value = new Vector2(0.96f, 1.0f);
+            audioSo.FindProperty("spatialBlend").floatValue = 0.25f;
+            audioSo.FindProperty("enableMountainValleyReverb").boolValue = false;
+            GameObject oldReverb = GameObject.Find("MountainValley_ReverbZone");
+            if (oldReverb != null) Object.DestroyImmediate(oldReverb);
+            SerializedProperty clipsProp = audioSo.FindProperty("gunshotClips");
+            clipsProp.ClearArray();
+            if (shot01 != null)
+            {
+                clipsProp.InsertArrayElementAtIndex(clipsProp.arraySize);
+                clipsProp.GetArrayElementAtIndex(clipsProp.arraySize - 1).objectReferenceValue = shot01;
+            }
+            if (shot02 != null)
+            {
+                clipsProp.InsertArrayElementAtIndex(clipsProp.arraySize);
+                clipsProp.GetArrayElementAtIndex(clipsProp.arraySize - 1).objectReferenceValue = shot02;
+            }
+            audioSo.ApplyModifiedPropertiesWithoutUndo();
+
             RifleWeapon weapon = playerRifle.GetComponent<RifleWeapon>();
             if (weapon != null)
             {
@@ -280,6 +310,7 @@ namespace VRAtis.EditorTools
 
                 EnsurePersistentListener(weapon.onWeaponFired, vfx, nameof(RifleVisualEffects.PlayMuzzleFlash));
                 EnsurePersistentListener(weapon.onWeaponFired, mech, nameof(RifleMechanismController.OnWeaponFired));
+                EnsurePersistentListener(weapon.onWeaponFired, audioCtrl, nameof(RifleAudioController.PlayGunshot));
                 EditorUtility.SetDirty(weapon);
             }
 
@@ -517,6 +548,24 @@ namespace VRAtis.EditorTools
                 UnityEventTools.AddPersistentListener(evt, vfx.PlayMuzzleFlash);
             else if (target is RifleMechanismController mech && methodName == nameof(RifleMechanismController.OnWeaponFired))
                 UnityEventTools.AddPersistentListener(evt, mech.OnWeaponFired);
+            else if (target is RifleAudioController audioCtrl && methodName == nameof(RifleAudioController.PlayGunshot))
+                UnityEventTools.AddPersistentListener(evt, audioCtrl.PlayGunshot);
+        }
+
+        private static AudioClip LoadConfiguredShotClip(string assetPath)
+        {
+            AudioImporter importer = AssetImporter.GetAtPath(assetPath) as AudioImporter;
+            if (importer != null)
+            {
+                AudioImporterSampleSettings settings = importer.defaultSampleSettings;
+                if (settings.loadType != AudioClipLoadType.DecompressOnLoad)
+                {
+                    settings.loadType = AudioClipLoadType.DecompressOnLoad;
+                    importer.defaultSampleSettings = settings;
+                    importer.SaveAndReimport();
+                }
+            }
+            return AssetDatabase.LoadAssetAtPath<AudioClip>(assetPath);
         }
 
         private static Light BuildOrReplaceMuzzleSpotLight(Transform muzzleTransform)
