@@ -16,7 +16,8 @@ namespace VRAtis.Hardware
     [RequireComponent(typeof(Camera))]
     public class CardboardStereoRig : MonoBehaviour
     {
-        private const string PrefsLensSpacingKey = "VRAtis_LensSpacingMm_V1";
+        private const string PrefsLensSpacingKey = "VRAtis_LensSpacingMm_V2";
+        public const float DefaultLensSpacingMm = 66f;
 
         public static bool IsStereoSplitActive { get; private set; }
         public static Rect LeftEyeViewportNorm { get; private set; } = new Rect(0.11f, 0f, 0.39f, 1f);
@@ -80,6 +81,7 @@ namespace VRAtis.Hardware
         private float _dynamicFovDeltaDeg;
         private GUIStyle _calibBtnStyle;
 
+        public float LensCenterSpacingMm => lensCenterSpacingMm;
         public float HalfVirtualIpdMeters => IsStereoSplitActive ? (virtualEyeIpdMm * 0.001f) * 0.5f : 0f;
 
         public void SetDynamicFovOffset(float fovDeltaDeg)
@@ -118,13 +120,25 @@ namespace VRAtis.Hardware
 
         public void NudgeLensSpacingMm(float deltaMm)
         {
-            lensCenterSpacingMm = Mathf.Clamp(lensCenterSpacingMm + deltaMm, 52f, 74f);
-            if (allowLiveCalibrationButtons && Application.isMobilePlatform)
+            SetLensCenterSpacingMm(lensCenterSpacingMm + deltaMm, persistToPrefs: true);
+        }
+
+        public void SetLensCenterSpacingMm(float spacingMm, bool persistToPrefs = true)
+        {
+            lensCenterSpacingMm = Mathf.Clamp(spacingMm, 52f, 74f);
+            if (persistToPrefs)
             {
                 PlayerPrefs.SetFloat(PrefsLensSpacingKey, lensCenterSpacingMm);
                 PlayerPrefs.Save();
             }
             ApplyStereoMode(forceSync: false);
+        }
+
+        public void ResetLensSpacingToDefault()
+        {
+            PlayerPrefs.DeleteKey(PrefsLensSpacingKey);
+            PlayerPrefs.Save();
+            SetLensCenterSpacingMm(DefaultLensSpacingMm, persistToPrefs: false);
         }
 
         private void Awake()
@@ -133,7 +147,7 @@ namespace VRAtis.Hardware
             _mainUrpData = GetComponent<UniversalAdditionalCameraData>();
             _originalMainTag = gameObject.tag;
 
-            if (allowLiveCalibrationButtons && Application.isMobilePlatform && PlayerPrefs.HasKey(PrefsLensSpacingKey))
+            if (PlayerPrefs.HasKey(PrefsLensSpacingKey))
                 lensCenterSpacingMm = Mathf.Clamp(PlayerPrefs.GetFloat(PrefsLensSpacingKey, lensCenterSpacingMm), 52f, 74f);
 
             _cachedPhysicalWidthMm = MeasurePhysicalPhoneWidthMm();
@@ -230,6 +244,8 @@ namespace VRAtis.Hardware
                     _rightEyeCam.rect = rightRect;
                 }
 
+                _leftEyeCam.depth = _mainCam.depth;
+                _rightEyeCam.depth = _mainCam.depth + 0.01f;
                 _leftEyeCam.gameObject.tag = string.IsNullOrEmpty(_originalMainTag) ? "MainCamera" : _originalMainTag;
                 _rightEyeCam.gameObject.tag = "Untagged";
 
@@ -296,10 +312,9 @@ namespace VRAtis.Hardware
             float phoneWidthMm = _cachedPhysicalWidthMm > 80f ? _cachedPhysicalWidthMm : fallbackPhoneWidthMm;
             DetectedPhoneWidthMm = phoneWidthMm;
 
-            float eyeWidthNorm = Mathf.Clamp(lensCenterSpacingMm / Mathf.Max(65f, phoneWidthMm), 0.25f, 0.498f);
-            float centerGapHalf = drawBlackMaskBorders ? 0.0012f : 0f;
-            leftRect = new Rect(0.5f - centerGapHalf - eyeWidthNorm, 0f, eyeWidthNorm, 1f);
-            rightRect = new Rect(0.5f + centerGapHalf, 0f, eyeWidthNorm, 1f);
+            float eyeWidthNorm = Mathf.Clamp(lensCenterSpacingMm / Mathf.Max(65f, phoneWidthMm), 0.25f, 0.5f);
+            leftRect = new Rect(0.5f - eyeWidthNorm, 0f, eyeWidthNorm, 1f);
+            rightRect = new Rect(0.5f, 0f, eyeWidthNorm, 1f);
         }
 
         private void RestoreSingleScreenState()

@@ -5,6 +5,7 @@ using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using VRAtis.Ballistics;
 using VRAtis.Environment;
+using VRAtis.Hardware;
 using VRAtis.UI;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
@@ -18,7 +19,7 @@ namespace VRAtis.EditorTools
     {
         private const string UiTexDir = "Assets/UI/Textures";
         private const string CanvasName = "SettingsUI_Canvas";
-        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V2_Done";
+        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V3_Done";
 
         private static readonly Color PanelBgColor = new Color(0.06f, 0.09f, 0.13f, 0.90f);
         private static readonly Color HeaderBgColor = new Color(0.09f, 0.14f, 0.20f, 0.96f);
@@ -78,10 +79,15 @@ namespace VRAtis.EditorTools
 
             canvasGo.AddComponent<GraphicRaycaster>();
 
-            // 1. Bottom-Right Gear Icon Button
+            GameObject primaryRootGo = new GameObject("PrimaryEye_UIRoot");
+            primaryRootGo.transform.SetParent(canvasGo.transform, false);
+            RectTransform primaryRootRt = primaryRootGo.AddComponent<RectTransform>();
+            StretchFull(primaryRootRt);
+
+            // 1. Bottom-Right Gear Icon Button (repositioned symmetrically per-eye when VR split-screen is active)
             Button gearBtn = CreateRoundedButton(
                 "BottomRight_SettingsButton",
-                canvasGo.transform,
+                primaryRootGo.transform,
                 roundedSprite,
                 PanelBgColor,
                 new Vector2(64f, 64f));
@@ -102,8 +108,8 @@ namespace VRAtis.EditorTools
             gearIconRt.anchorMax = new Vector2(0.5f, 0.5f);
             gearIconRt.sizeDelta = new Vector2(36f, 36f);
 
-            // 2. Settings Window Root (docked neatly bottom-right above Gear Button)
-            GameObject windowGo = CreateRoundedPanel("SettingsWindow", canvasGo.transform, roundedSprite, PanelBgColor);
+            // 2. Settings Window Root (docked bottom-right on single screen, centered per-eye in VR)
+            GameObject windowGo = CreateRoundedPanel("SettingsWindow", primaryRootGo.transform, roundedSprite, PanelBgColor);
             RectTransform winRt = windowGo.GetComponent<RectTransform>();
             winRt.anchorMin = new Vector2(1f, 0f);
             winRt.anchorMax = new Vector2(1f, 0f);
@@ -166,6 +172,8 @@ namespace VRAtis.EditorTools
                 "Hava Durumu",
                 "Yağmur, sis ve günün saati ayarları");
 
+            CreateVrCalibrationCard(mainPage.transform, roundedSprite, checkRingSprite, checkMarkSprite, font);
+
             // Page 2: Weather Selection Sub-Panel
             GameObject weatherPage = new GameObject("WeatherCategoryPage");
             weatherPage.transform.SetParent(contentGo.transform, false);
@@ -227,24 +235,8 @@ namespace VRAtis.EditorTools
             SerializedObject so = new SerializedObject(menuCtrl);
             so.FindProperty("timeOfDayController").objectReferenceValue = Object.FindAnyObjectByType<DynamicTimeOfDay>();
             so.FindProperty("environmentManager").objectReferenceValue = Object.FindAnyObjectByType<EnvironmentManager>();
-            so.FindProperty("settingsGearButton").objectReferenceValue = gearBtn;
-            so.FindProperty("settingsWindowRoot").objectReferenceValue = windowGo;
-            so.FindProperty("mainCategoryPage").objectReferenceValue = mainPage;
-            so.FindProperty("weatherCategoryPage").objectReferenceValue = weatherPage;
-            so.FindProperty("openWeatherCategoryButton").objectReferenceValue = weatherMenuBtn;
-            so.FindProperty("weatherBackButton").objectReferenceValue = backBtn;
-            so.FindProperty("closeWindowButton").objectReferenceValue = closeBtn;
-            so.FindProperty("rainCheckbox").objectReferenceValue = rainToggle;
-            so.FindProperty("fogCheckbox").objectReferenceValue = fogToggle;
-            so.FindProperty("autoTimeAdvanceCheckbox").objectReferenceValue = autoTimeToggle;
-
-            SerializedProperty togglesProp = so.FindProperty("timePresetToggles");
-            togglesProp.ClearArray();
-            for (int i = 0; i < timeToggles.Length; i++)
-            {
-                togglesProp.InsertArrayElementAtIndex(i);
-                togglesProp.GetArrayElementAtIndex(i).objectReferenceValue = timeToggles[i];
-            }
+            so.FindProperty("stereoRig").objectReferenceValue = Object.FindAnyObjectByType<CardboardStereoRig>();
+            so.FindProperty("primaryEyeRoot").objectReferenceValue = primaryRootRt;
             so.ApplyModifiedPropertiesWithoutUndo();
 
             weatherPage.SetActive(false);
@@ -254,7 +246,7 @@ namespace VRAtis.EditorTools
             EditorSceneManager.MarkSceneDirty(canvasGo.scene);
             EditorSceneManager.SaveOpenScenes();
             EditorPrefs.SetBool(AutoSetupVersionKey, true);
-            Debug.Log("[SettingsMenuSetupTool] Sağ alt Ayarlar simgesi ve Hava Durumu menüsü kuruldu!");
+            Debug.Log("[SettingsMenuSetupTool] V3 Kuruldu: Çift göz stereo senkron Ayarlar menüsü + VR Mercek (66mm) kontrolü!");
         }
 
         private static void EnsureEventSystem()
@@ -375,6 +367,76 @@ namespace VRAtis.EditorTools
             aRt.anchoredPosition = new Vector2(-14f, 0f);
             aRt.sizeDelta = new Vector2(24f, 0f);
 
+            return btn;
+        }
+
+        private static void CreateVrCalibrationCard(
+            Transform parent,
+            Sprite roundedSprite,
+            Sprite boxSprite,
+            Sprite markSprite,
+            Font font)
+        {
+            GameObject cardGo = CreateRoundedPanel("VRCalibrationCard", parent, roundedSprite, CardBgColor);
+            LayoutElement cardLe = cardGo.AddComponent<LayoutElement>();
+            cardLe.minHeight = 142f;
+            cardLe.preferredHeight = 142f;
+
+            VerticalLayoutGroup cardLayout = cardGo.AddComponent<VerticalLayoutGroup>();
+            cardLayout.padding = new RectOffset(12, 12, 10, 10);
+            cardLayout.spacing = 8f;
+            cardLayout.childControlWidth = true;
+            cardLayout.childControlHeight = true;
+            cardLayout.childForceExpandWidth = true;
+            cardLayout.childForceExpandHeight = false;
+
+            GameObject headerRow = CreateRowContainer("VrHeaderRow", cardGo.transform, 22f);
+            Text headerLbl = CreateText("VrTitleText", headerRow.transform, font, "VR GÖZLÜK & MERCEK", 13, FontStyle.Bold, AccentColor, TextAnchor.MiddleLeft);
+            StretchFull(headerLbl.GetComponent<RectTransform>());
+            Text screenLbl = CreateText("VrScreenWidthText", headerRow.transform, font, "Ekran: 154 mm", 12, FontStyle.Normal, TextMutedColor, TextAnchor.MiddleRight);
+            StretchFull(screenLbl.GetComponent<RectTransform>());
+
+            GameObject lensRow = CreateRowContainer("LensControlRow", cardGo.transform, 36f);
+            HorizontalLayoutGroup hLayout = lensRow.AddComponent<HorizontalLayoutGroup>();
+            hLayout.spacing = 8f;
+            hLayout.childControlWidth = true;
+            hLayout.childControlHeight = true;
+            hLayout.childForceExpandWidth = false;
+            hLayout.childForceExpandHeight = true;
+
+            CreateCompactButton("LensMinusButton", lensRow.transform, roundedSprite, HeaderBgColor, font, "-1", 54f);
+
+            GameObject valContainer = new GameObject("LensValueText");
+            valContainer.transform.SetParent(lensRow.transform, false);
+            Text valTxt = valContainer.AddComponent<Text>();
+            valTxt.font = font;
+            valTxt.text = "66 mm";
+            valTxt.fontSize = 16;
+            valTxt.fontStyle = FontStyle.Bold;
+            valTxt.color = TextPrimaryColor;
+            valTxt.alignment = TextAnchor.MiddleCenter;
+            valTxt.raycastTarget = false;
+            LayoutElement valLe = valContainer.AddComponent<LayoutElement>();
+            valLe.flexibleWidth = 1f;
+            valLe.minWidth = 80f;
+
+            CreateCompactButton("LensPlusButton", lensRow.transform, roundedSprite, HeaderBgColor, font, "+1", 54f);
+            CreateCompactButton("LensResetButton", lensRow.transform, roundedSprite, new Color(0.14f, 0.28f, 0.25f, 0.95f), font, "66 mm", 76f);
+
+            Toggle vrSplit = CreateToggleRow("VrSplitCheckbox", cardGo.transform, roundedSprite, boxSprite, markSprite, font, "VR Çift Ekran Bölme (F2)", null, 34f);
+            Image splitBg = vrSplit.GetComponent<Image>();
+            if (splitBg != null)
+                splitBg.color = HeaderBgColor;
+        }
+
+        private static Button CreateCompactButton(string name, Transform parent, Sprite roundedSprite, Color bgColor, Font font, string label, float width)
+        {
+            Button btn = CreateRoundedButton(name, parent, roundedSprite, bgColor, new Vector2(width, 36f));
+            LayoutElement le = btn.gameObject.AddComponent<LayoutElement>();
+            le.minWidth = width;
+            le.preferredWidth = width;
+            Text txt = CreateText("Label", btn.transform, font, label, 14, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(txt.GetComponent<RectTransform>());
             return btn;
         }
 

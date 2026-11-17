@@ -44,6 +44,7 @@ namespace VRAtis.Environment
         [SerializeField] private Color dayFogColor = new Color(0.68f, 0.78f, 0.88f);
         [SerializeField] private Color goldenFogColor = new Color(0.75f, 0.56f, 0.44f);
         [SerializeField] private Color nightFogColor = new Color(0.05f, 0.08f, 0.14f);
+        [SerializeField] private Color rainDayFogColor = new Color(0.38f, 0.44f, 0.50f);
 
         [Header("Dinamik Gökyüzü ve Bulut Akışı")]
         [SerializeField] private Vector2 baseCloudDriftSpeed = new Vector2(0.00045f, 0.00020f);
@@ -60,8 +61,11 @@ namespace VRAtis.Environment
         private static readonly int SkyCloudLitColorId = Shader.PropertyToID("_VRAtisSkyCloudLitColor");
         private static readonly int SkyCloudShadowColorId = Shader.PropertyToID("_VRAtisSkyCloudShadowColor");
         private static readonly int SkyWindOffsetId = Shader.PropertyToID("_VRAtisSkyWindOffset");
+        private static readonly int SkyRainId = Shader.PropertyToID("_VRAtisSkyRain");
 
         private Vector2 _cloudWindOffset = new Vector2(0.12f, 0.08f);
+        private float _rainWeatherFactor;
+        private float _fogWeatherFactor;
 
         private void Awake()
         {
@@ -127,6 +131,25 @@ namespace VRAtis.Environment
             autoAdvanceTime = enabled;
         }
 
+        public void SetWeatherModifiers(float rainFactor01, float fogFactor01)
+        {
+            _rainWeatherFactor = Mathf.Clamp01(rainFactor01);
+            _fogWeatherFactor = Mathf.Clamp01(fogFactor01);
+            ApplyTimeOfDay();
+        }
+
+        public void SetRainWeatherFactor(float rainFactor01)
+        {
+            _rainWeatherFactor = Mathf.Clamp01(rainFactor01);
+            ApplyTimeOfDay();
+        }
+
+        public void SetFogWeatherFactor(float fogFactor01)
+        {
+            _fogWeatherFactor = Mathf.Clamp01(fogFactor01);
+            ApplyTimeOfDay();
+        }
+
         private void FindSunLightIfMissing()
         {
             if (sunLight != null)
@@ -180,6 +203,10 @@ namespace VRAtis.Environment
                 ? Mathf.Lerp(0.45f, 2.2f, Mathf.Pow(daylight, 0.65f))
                 : 0.22f;
 
+            // Storm clouds dim sunlight and shift to overcast cool slate during heavy rain
+            sunCol = Color.Lerp(sunCol, new Color(0.68f, 0.74f, 0.82f), _rainWeatherFactor * 0.65f);
+            sunIntensity *= Mathf.Lerp(1f, 0.42f, _rainWeatherFactor);
+
             sunLight.color = sunCol;
             sunLight.intensity = sunIntensity;
 
@@ -187,7 +214,11 @@ namespace VRAtis.Environment
             RenderSettings.ambientMode = AmbientMode.Trilight;
             Color skyAmb = Color.Lerp(new Color(0.05f, 0.08f, 0.15f), new Color(0.45f, 0.62f, 0.85f), daylight);
             skyAmb = Color.Lerp(skyAmb, new Color(0.55f, 0.36f, 0.28f), goldenMix * 0.6f);
+            skyAmb = Color.Lerp(skyAmb, Color.Lerp(new Color(0.05f, 0.07f, 0.10f), new Color(0.36f, 0.41f, 0.48f), daylight), _rainWeatherFactor * 0.75f);
+
             Color eqAmb = Color.Lerp(new Color(0.04f, 0.05f, 0.09f), new Color(0.38f, 0.42f, 0.46f), daylight);
+            eqAmb = Color.Lerp(eqAmb, Color.Lerp(new Color(0.04f, 0.05f, 0.08f), new Color(0.30f, 0.34f, 0.39f), daylight), _rainWeatherFactor * 0.70f);
+
             Color grdAmb = Color.Lerp(new Color(0.02f, 0.03f, 0.04f), new Color(0.18f, 0.17f, 0.14f), daylight);
             RenderSettings.ambientSkyColor = skyAmb;
             RenderSettings.ambientEquatorColor = eqAmb;
@@ -195,20 +226,27 @@ namespace VRAtis.Environment
 
             Color fogCol = Color.Lerp(nightFogColor, dayFogColor, daylight);
             fogCol = Color.Lerp(fogCol, goldenFogColor, goldenMix * 0.75f);
+            Color stormHorizonTint = Color.Lerp(new Color(0.04f, 0.06f, 0.10f), rainDayFogColor, daylight);
+            fogCol = Color.Lerp(fogCol, stormHorizonTint, _rainWeatherFactor * 0.65f);
 
             if (controlFog)
             {
                 RenderSettings.fog = true;
                 RenderSettings.fogMode = FogMode.ExponentialSquared;
                 RenderSettings.fogColor = fogCol;
-                RenderSettings.fogDensity = daylight > 0.15f
+                float baseFogDensity = daylight > 0.15f
                     ? Mathf.Lerp(duskFogDensity, dayFogDensity, daylight)
                     : nightFogDensity;
+                // Keep distant mountains visible during rain (fog density stays reserved for explicit Fog mode)
+                float targetFog = baseFogDensity;
+                if (_fogWeatherFactor > 0.001f)
+                    targetFog = Mathf.Max(baseFogDensity, Mathf.Lerp(baseFogDensity, 0.011f, _fogWeatherFactor));
+                RenderSettings.fogDensity = targetFog;
             }
 
             if (EnvironmentManager.Instance != null)
             {
-                EnvironmentManager.Instance.daylightFactor = daylight;
+                EnvironmentManager.Instance.daylightFactor = daylight * Mathf.Lerp(1f, 0.42f, _rainWeatherFactor);
                 EnvironmentManager.Instance.isNight = daylight <= 0.15f;
             }
 
@@ -219,16 +257,19 @@ namespace VRAtis.Environment
 
             Color zenithCol = Color.Lerp(new Color(0.015f, 0.025f, 0.055f), new Color(0.12f, 0.34f, 0.72f), daylight);
             zenithCol = Color.Lerp(zenithCol, new Color(0.15f, 0.24f, 0.48f), goldenMix * 0.65f);
+            zenithCol = Color.Lerp(zenithCol, Color.Lerp(new Color(0.02f, 0.03f, 0.05f), new Color(0.18f, 0.22f, 0.28f), daylight), _rainWeatherFactor * 0.9f);
 
             Color cloudLit = Color.Lerp(new Color(0.15f, 0.20f, 0.32f), new Color(1.04f, 1.02f, 0.98f), daylight);
             cloudLit = Color.Lerp(cloudLit, new Color(1.06f, 0.68f, 0.40f), goldenMix * 0.85f);
+            cloudLit = Color.Lerp(cloudLit, Color.Lerp(new Color(0.08f, 0.10f, 0.14f), new Color(0.36f, 0.40f, 0.46f), daylight), _rainWeatherFactor * 0.92f);
 
             Color cloudShadow = Color.Lerp(new Color(0.04f, 0.06f, 0.11f), new Color(0.46f, 0.56f, 0.70f), daylight);
             cloudShadow = Color.Lerp(cloudShadow, new Color(0.38f, 0.30f, 0.42f), goldenMix * 0.75f);
+            cloudShadow = Color.Lerp(cloudShadow, Color.Lerp(new Color(0.03f, 0.04f, 0.07f), new Color(0.15f, 0.18f, 0.23f), daylight), _rainWeatherFactor * 0.92f);
 
             Shader.SetGlobalFloat(SkyActiveId, 1.0f);
             Shader.SetGlobalFloat(SkyDaylightId, daylight);
-            Shader.SetGlobalFloat(SkyGoldenMixId, goldenMix);
+            Shader.SetGlobalFloat(SkyGoldenMixId, goldenMix * (1f - _rainWeatherFactor * 0.8f));
             Shader.SetGlobalVector(SkySunDirId, new Vector4(skySunDir.x, skySunDir.y, skySunDir.z, 0f));
             Shader.SetGlobalColor(SkySunColorId, sunCol);
             Shader.SetGlobalColor(SkyZenithColorId, zenithCol);
@@ -237,6 +278,7 @@ namespace VRAtis.Environment
             Shader.SetGlobalColor(SkyCloudLitColorId, cloudLit);
             Shader.SetGlobalColor(SkyCloudShadowColorId, cloudShadow);
             Shader.SetGlobalVector(SkyWindOffsetId, new Vector4(_cloudWindOffset.x, _cloudWindOffset.y, 0f, 0f));
+            Shader.SetGlobalFloat(SkyRainId, _rainWeatherFactor);
         }
     }
 }

@@ -86,6 +86,7 @@ Shader "VRAtis/AlpineCloudsSkybox"
             half4 _VRAtisSkyCloudLitColor;
             half4 _VRAtisSkyCloudShadowColor;
             float4 _VRAtisSkyWindOffset;
+            float _VRAtisSkyRain;
 
             float StarHash(float3 p)
             {
@@ -130,6 +131,7 @@ Shader "VRAtis/AlpineCloudsSkybox"
                 half3 cloudLitCol = live ? _VRAtisSkyCloudLitColor.rgb : _FallbackCloudLit.rgb;
                 half3 cloudShadowCol = live ? _VRAtisSkyCloudShadowColor.rgb : _FallbackCloudShadow.rgb;
                 float2 windOffset = live ? _VRAtisSkyWindOffset.xy : float2(0.0, 0.0);
+                float rainMix = live ? saturate(_VRAtisSkyRain) : 0.0;
 
                 // 1. Atmospheric Sky Gradient
                 float up = saturate(dir.y);
@@ -143,23 +145,24 @@ Shader "VRAtis/AlpineCloudsSkybox"
                     skyCol = lerp(horizonCol, groundCol, downFactor);
                 }
 
-                // 2. Sun Disc & Atmospheric Scatter Halo
+                // 2. Sun Disc & Atmospheric Scatter Halo (veiled by storm clouds during rain)
                 float sunCos = max(dot(dir, sunDir), 0.0);
-                float sunVisible = smoothstep(-0.08, 0.10, sunDir.y) * smoothstep(0.05, 0.35, daylight);
+                float sunVisible = smoothstep(-0.08, 0.10, sunDir.y) * smoothstep(0.05, 0.35, daylight) * (1.0 - rainMix * 0.92);
                 half3 sunHalo = sunCol * (pow(sunCos, 6.0) * (0.16 + goldenMix * 0.42) + pow(sunCos, 96.0) * 0.95) * sunVisible;
                 half3 sunDisc = sunCol * (smoothstep(0.99935, 0.99980, sunCos) * 4.5) * sunVisible;
 
                 // Subtle Moon glow at night
                 float3 moonDir = normalize(float3(-sunDir.x, max(0.32, abs(sunDir.y) + 0.25), -sunDir.z));
                 float moonCos = max(dot(dir, moonDir), 0.0);
-                float nightMask = smoothstep(0.28, 0.02, daylight);
+                float nightMask = smoothstep(0.28, 0.02, daylight) * (1.0 - rainMix * 0.85);
                 half3 moonGlow = half3(0.55, 0.68, 0.95) * (pow(moonCos, 128.0) * 0.45 + smoothstep(0.9996, 0.99985, moonCos) * 1.4) * nightMask;
 
                 skyCol += sunHalo + moonGlow;
 
-                // 3. Crisp pinpoint Alpine Night Stars in clear patches
+                // 3. Crisp pinpoint Alpine Night Stars in clear patches (hidden by rain overcast)
                 half3 starCol = half3(0, 0, 0);
-                if (nightMask > 0.01 && dir.y > 0.04)
+                float starVisibility = (1.0 - rainMix * 0.96);
+                if (nightMask > 0.01 && starVisibility > 0.02 && dir.y > 0.04)
                 {
                     float3 starCell = floor(dir * 340.0);
                     float h = StarHash(starCell);
@@ -169,7 +172,7 @@ Shader "VRAtis/AlpineCloudsSkybox"
                         float dist = length(dir - cellCenter) * 340.0;
                         float pinpoint = smoothstep(0.22, 0.03, dist);
                         float twinkle = (h - 0.9958) / 0.0042;
-                        starCol = half3(0.84, 0.90, 1.0) * (pinpoint * twinkle * _StarIntensity * nightMask * smoothstep(0.04, 0.25, dir.y));
+                        starCol = half3(0.84, 0.90, 1.0) * (pinpoint * twinkle * _StarIntensity * nightMask * starVisibility * smoothstep(0.04, 0.25, dir.y));
                     }
                 }
 
@@ -192,7 +195,7 @@ Shader "VRAtis/AlpineCloudsSkybox"
                     half3 bgBase = lerp(skyCol, cirrusColor, cirrusAlpha * 0.65);
                     finalColor = lerp(finalColor, cirrusColor, cirrusAlpha);
 
-                    // Layer B: Soft billowing 3D-lit Alpine Cumulus Clouds
+                    // Layer B: Soft billowing 3D-lit Alpine Cumulus Clouds (thickens to overcast during storm rain)
                     float2 cumUV = projUV * _CumulusScale + windOffset;
                     half4 texMain = SAMPLE_TEXTURE2D(_CloudTex, sampler_CloudTex, cumUV);
                     half4 texDetail = SAMPLE_TEXTURE2D(_CloudTex, sampler_CloudTex, cumUV * 1.65 - windOffset * 0.28 + float2(0.37, 0.19));
@@ -200,11 +203,14 @@ Shader "VRAtis/AlpineCloudsSkybox"
                     float macro = texMain.r;
                     float erode = texDetail.g * 0.55 + texDetail.a * 0.45;
                     float density = macro * 0.84 + texMain.g * 0.24 - (1.0 - erode) * 0.22;
-                    float cloudMask = smoothstep(_CloudThreshold - _CloudSoftness, _CloudThreshold + _CloudSoftness, density);
+                    float effThreshold = lerp(_CloudThreshold, 0.20, rainMix);
+                    float effSoftness = lerp(_CloudSoftness, 0.30, rainMix);
+                    float effOpacity = lerp(_CumulusOpacity, 0.98, rainMix);
+                    float cloudMask = smoothstep(effThreshold - effSoftness, effThreshold + effSoftness, density);
 
                     // Softer night cloud silhouette so low-luminance clouds avoid harsh blotches
                     float nightSoftAlpha = lerp(0.68, 1.0, smoothstep(0.05, 0.35, daylight));
-                    float opticalAlpha = saturate(cloudMask * _CumulusOpacity * nightSoftAlpha * horizonFade);
+                    float opticalAlpha = saturate(cloudMask * effOpacity * nightSoftAlpha * horizonFade);
 
                     // Directional single-step self-shadow toward Sun XZ for crisp 3D volume
                     float2 sunXZ = sunDir.xz;
