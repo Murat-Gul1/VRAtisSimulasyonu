@@ -70,9 +70,15 @@ namespace VRAtis.Hardware
         [Tooltip("Tam hıza geçiş açısal hızı (derece/sn).")]
         [SerializeField] private float fastTurnSpeedDegPerSec = 90f;
 
+        private static readonly Quaternion VerticalMountRotation = Quaternion.Euler(90f, 0f, 0f);
+
         private Quaternion _yawCalibrationOffset = Quaternion.identity;
         private bool _hasAutoZeroed;
         private HeadTrackingCameraController _headTracker;
+
+        // Cached mount offset quaternion to avoid per-frame Euler conversion
+        private Vector3 _lastMountOffsetEuler;
+        private Quaternion _cachedMountOffsetQuat = Quaternion.identity;
 
         // Dead-reckoning state
         private uint _lastPacketSeq;
@@ -95,6 +101,11 @@ namespace VRAtis.Hardware
                 else if (Camera.main != null)
                     headCameraTransform = Camera.main.transform;
             }
+
+            _lastMountOffsetEuler = mountOffsetEuler;
+            _cachedMountOffsetQuat = mountOffsetEuler.sqrMagnitude > 1e-5f
+                ? Quaternion.Euler(mountOffsetEuler)
+                : Quaternion.identity;
         }
 
         private void Update()
@@ -155,6 +166,17 @@ namespace VRAtis.Hardware
                     _lastCalibratedPacketRot = calibratedPacketRot;
                     _elapsedSinceLastDistinctPacket = 0f;
                 }
+                else
+                {
+                    // Stationary packet arrived: decay speed so dead-reckoning does not oscillate across packet intervals
+                    _estimatedAngularSpeedDegPerSec = Mathf.Lerp(_estimatedAngularSpeedDegPerSec, 0f, 0.65f);
+                    _lastCalibratedPacketRot = calibratedPacketRot;
+                    _elapsedSinceLastDistinctPacket = 0f;
+                }
+            }
+            else if (_elapsedSinceLastDistinctPacket > 0.05f)
+            {
+                _estimatedAngularSpeedDegPerSec = Mathf.Lerp(_estimatedAngularSpeedDegPerSec, 0f, 0.35f);
             }
 
             Quaternion targetRotation = calibratedPacketRot;
@@ -174,9 +196,10 @@ namespace VRAtis.Hardware
                 }
             }
 
+            Quaternion nextRotation;
             if (!enableAdaptiveSmoothing)
             {
-                transform.rotation = targetRotation;
+                nextRotation = targetRotation;
             }
             else
             {
@@ -186,7 +209,13 @@ namespace VRAtis.Hardware
                 float adaptiveCutoff = Mathf.Lerp(minSmoothingSpeed, maxSmoothingSpeed, speedFactor);
 
                 float t = 1f - Mathf.Exp(-adaptiveCutoff * Time.unscaledDeltaTime);
-                transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, t);
+                nextRotation = Quaternion.Slerp(transform.rotation, targetRotation, t);
+            }
+
+            // Avoid dirtying the rifle transform hierarchy & child renderer bounds when orientation is unchanged
+            if (1f - Mathf.Abs(Quaternion.Dot(transform.rotation, nextRotation)) > 1e-7f)
+            {
+                transform.rotation = nextRotation;
             }
         }
 
@@ -213,7 +242,9 @@ namespace VRAtis.Hardware
         private void ApplyYawCalibration(Quaternion converted)
         {
             Transform refCam = headCameraTransform != null ? headCameraTransform : (Camera.main != null ? Camera.main.transform : null);
-            Vector3 desiredForward = refCam != null ? refCam.forward : Vector3.forward;
+            Vector3 desiredForward = _headTracker != null
+                ? (_headTracker.ReadyWorldRotation * Vector3.forward)
+                : (refCam != null ? refCam.forward : Vector3.forward);
             Vector3 flatDesiredForward = new Vector3(desiredForward.x, 0f, desiredForward.z);
             if (flatDesiredForward.sqrMagnitude < 1e-4f)
                 flatDesiredForward = Vector3.forward;
@@ -233,7 +264,7 @@ namespace VRAtis.Hardware
 
             if (mountPreset == SensorMountPreset.VerticalBackFacingShooter)
             {
-                unityQ = new Quaternion(-imuQ.x, -imuQ.z, -imuQ.y, imuQ.w) * Quaternion.Euler(90f, 0f, 0f);
+                unityQ = new Quaternion(-imuQ.x, -imuQ.z, -imuQ.y, imuQ.w) * VerticalMountRotation;
             }
             else if (mountPreset == SensorMountPreset.StandardMpuFlatForward)
             {
@@ -241,10 +272,9 @@ namespace VRAtis.Hardware
             }
             else
             {
-                float[] s = { 0f, imuQ.x, imuQ.y, imuQ.z };
-                float ux = ExtractAxis(s, unityAxisFromSensor.x);
-                float uy = ExtractAxis(s, unityAxisFromSensor.y);
-                float uz = ExtractAxis(s, unityAxisFromSensor.z);
+                float ux = ExtractAxis(imuQ, unityAxisFromSensor.x);
+                float uy = ExtractAxis(imuQ, unityAxisFromSensor.y);
+                float uz = ExtractAxis(imuQ, unityAxisFromSensor.z);
                 unityQ = new Quaternion(-ux, -uy, -uz, imuQ.w);
             }
 
@@ -259,17 +289,23 @@ namespace VRAtis.Hardware
 
             if (mountOffsetEuler.sqrMagnitude > 1e-5f)
             {
-                unityQ *= Quaternion.Euler(mountOffsetEuler);
+                if ((_lastMountOffsetEuler - mountOffsetEuler).sqrMagnitude > 1e-6f)
+                {
+                    _lastMountOffsetEuler = mountOffsetEuler;
+                    _cachedMountOffsetQuat = Quaternion.Euler(mountOffsetEuler);
+                }
+                unityQ *= _cachedMountOffsetQuat;
             }
 
             return unityQ;
         }
 
-        private static float ExtractAxis(float[] components, int signedAxisIndex)
+        private static float ExtractAxis(Quaternion imuQ, int signedAxisIndex)
         {
             int idx = Mathf.Clamp(Mathf.Abs(signedAxisIndex), 1, 3);
             float sign = signedAxisIndex < 0 ? -1f : 1f;
-            return components[idx] * sign;
+            float val = idx == 1 ? imuQ.x : (idx == 2 ? imuQ.y : imuQ.z);
+            return val * sign;
         }
     }
 }

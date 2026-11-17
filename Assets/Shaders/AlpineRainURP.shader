@@ -73,6 +73,7 @@ Shader "VRAtis/AlpineRainURP"
             float _RainIntensity;
             float4 _RainWindXZ;
             float4 _RainAnchorPos;
+            float4 _RainCamForward;
 
             Varyings vert(Attributes input)
             {
@@ -82,7 +83,7 @@ Shader "VRAtis/AlpineRainURP"
 
                 if (_RainIntensity <= 0.002)
                 {
-                    output.positionCS = float4(0.0, 0.0, -2.0, 1.0);
+                    output.positionCS = float4(2.0, 2.0, 2.0, 1.0);
                     output.uv = input.uv;
                     output.alpha = 0.0h;
                     return output;
@@ -96,6 +97,23 @@ Shader "VRAtis/AlpineRainURP"
                 float3 rel = frac((input.positionOS.xyz + vel * _Time.y - _RainAnchorPos.xyz) / box + 0.5) - 0.5;
                 float3 centerWS = _RainAnchorPos.xyz + rel * box;
 
+                float3 toDrop = centerWS - _WorldSpaceCameraPos;
+                float camDist = length(toDrop);
+
+                // Early-cull drops behind the viewer or outside the ~62 deg VR view cone (zero fill-rate cost)
+                float fwdLenSq = dot(_RainCamForward.xyz, _RainCamForward.xyz);
+                if (fwdLenSq > 0.5)
+                {
+                    float camFwdDot = dot(toDrop, _RainCamForward.xyz);
+                    if (camFwdDot < 0.15 || (camDist > 1.1 && camFwdDot < camDist * 0.45))
+                    {
+                        output.positionCS = float4(2.0, 2.0, 2.0, 1.0);
+                        output.uv = input.uv;
+                        output.alpha = 0.0h;
+                        return output;
+                    }
+                }
+
                 // Fade softly near volume borders and suppress drops clipping beneath the terrain plane
                 float borderDist = min(min(0.5 - abs(rel.x), 0.5 - abs(rel.y)), 0.5 - abs(rel.z));
                 float edgeMask = saturate(borderDist * 8.0);
@@ -103,9 +121,7 @@ Shader "VRAtis/AlpineRainURP"
 
                 // Cylindrical velocity-aligned billboard around each independent falling drop
                 float3 axisLen = normalize(vel);
-                float3 toCamVec = _WorldSpaceCameraPos - centerWS;
-                float camDist = length(toCamVec);
-                float3 toCamDir = camDist > 0.001 ? (toCamVec / camDist) : float3(0.0, 0.0, 1.0);
+                float3 toCamDir = camDist > 0.001 ? (-toDrop / camDist) : float3(0.0, 0.0, 1.0);
                 float3 axisSide = cross(axisLen, toCamDir);
                 float sideLenSq = dot(axisSide, axisSide);
                 axisSide = sideLenSq > 1e-5 ? (axisSide * rsqrt(sideLenSq)) : float3(1.0, 0.0, 0.0);

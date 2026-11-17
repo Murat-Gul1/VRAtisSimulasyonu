@@ -61,6 +61,9 @@ namespace VRAtis.Weapons
         private bool _hardwareShoulderActive;
         private float _linearAim01;
         private float _easedAim01;
+        private bool _isIdleAtReadyPose = true;
+        private bool _wasAligningRotation;
+        private float _lastAppliedReticlePower = -1f;
 
         public bool IsAiming => _keyAimActive || _hardwareShoulderActive;
         public float AimBlend => _easedAim01;
@@ -69,10 +72,19 @@ namespace VRAtis.Weapons
         {
             ResolveReferences();
             CacheReadyPoseAndSightOffset();
+            ApplyReticlePowerIfChanged(0f);
+        }
+
+        private void OnEnable()
+        {
+            Application.onBeforeRender += OnBeforeRender;
         }
 
         private void OnDisable()
         {
+            Application.onBeforeRender -= OnBeforeRender;
+
+            _lastAppliedReticlePower = -1f;
             if (redDotSight != null)
                 redDotSight.SetReticlePower(0f);
 
@@ -116,20 +128,74 @@ namespace VRAtis.Weapons
             if (!_sightOffsetCached)
                 CacheReadyPoseAndSightOffset();
 
-            float target = IsAiming ? 1f : 0f;
+            bool aiming = IsAiming;
+
+            // When not aiming and already settled in ready stance, do not overwrite
+            // mainCameraTransform.position/rotation or re-apply MaterialPropertyBlock every frame.
+            // This gives HeadTrackingCameraController (and its onBeforeRender hook) uncontested
+            // control of the camera during VR head rotation.
+            if (!aiming && _linearAim01 <= 0.0001f)
+            {
+                if (!_isIdleAtReadyPose)
+                {
+                    _linearAim01 = 0f;
+                    _easedAim01 = 0f;
+                    _isIdleAtReadyPose = true;
+
+                    ApplyReticlePowerIfChanged(0f);
+
+                    Vector3 restPos = headTracker != null ? headTracker.ReadyWorldPosition : _fallbackReadyPos;
+                    if ((mainCameraTransform.position - restPos).sqrMagnitude > 1e-8f)
+                        mainCameraTransform.position = restPos;
+
+                    if (_wasAligningRotation)
+                    {
+                        Quaternion restRot = headTracker != null ? headTracker.ReadyWorldRotation : _fallbackReadyRot;
+                        mainCameraTransform.rotation = restRot;
+                        _wasAligningRotation = false;
+                    }
+
+                    if (stereoRig != null)
+                        stereoRig.SetDynamicFovOffset(0f);
+                }
+                return;
+            }
+
+            _isIdleAtReadyPose = false;
+
+            float target = aiming ? 1f : 0f;
             float step = Time.unscaledDeltaTime / Mathf.Max(0.05f, aimTransitionDurationSec);
             _linearAim01 = Mathf.MoveTowards(_linearAim01, target, step);
 
             // Smooth S-curve ease-in/ease-out for cinematic cheek-weld motion
             _easedAim01 = _linearAim01 * _linearAim01 * (3f - 2f * _linearAim01);
 
-            if (redDotSight != null)
-            {
-                // Illuminate glowing red dot swiftly as optic rises into view
-                float ledPower = Mathf.Clamp01(_easedAim01 / 0.32f);
-                redDotSight.SetReticlePower(ledPower);
-            }
+            // Illuminate glowing red dot swiftly as optic rises into view
+            float ledPower = Mathf.Clamp01(_easedAim01 / 0.32f);
+            ApplyReticlePowerIfChanged(ledPower);
 
+            UpdateAimCameraPose();
+
+            if (stereoRig != null)
+            {
+                float zoomDeg = CardboardStereoRig.IsStereoSplitActive ? vrFovZoomDeg : singleScreenFovZoomDeg;
+                stereoRig.SetDynamicFovOffset(-_easedAim01 * zoomDeg);
+            }
+        }
+
+        private void OnBeforeRender()
+        {
+            if (_isIdleAtReadyPose || _easedAim01 <= 0.0001f)
+                return;
+
+            if (mainCameraTransform == null || playerRifleTransform == null)
+                return;
+
+            UpdateAimCameraPose();
+        }
+
+        private void UpdateAimCameraPose()
+        {
             Vector3 readyPos = headTracker != null ? headTracker.ReadyWorldPosition : _fallbackReadyPos;
             Quaternion readyRot = headTracker != null ? headTracker.ReadyWorldRotation : _fallbackReadyRot;
 
@@ -139,8 +205,12 @@ namespace VRAtis.Weapons
 
             Vector3 adsLocalOffset = _localSightCenterInRifle + new Vector3(-vrEyeShiftX, adsVerticalOffsetMeters, -eyeReliefMeters);
             Vector3 adsWorldPos = playerRifleTransform.TransformPoint(adsLocalOffset);
+            Vector3 targetPos = Vector3.Lerp(readyPos, adsWorldPos, _easedAim01);
 
-            mainCameraTransform.position = Vector3.Lerp(readyPos, adsWorldPos, _easedAim01);
+            if ((mainCameraTransform.position - targetPos).sqrMagnitude > 1e-8f)
+            {
+                mainCameraTransform.position = targetPos;
+            }
 
             bool shouldAlignRotation = alignCameraRotationWhenNoMobileSensor &&
                                        (headTracker == null || !headTracker.IsUsingMobileSensor);
@@ -148,17 +218,27 @@ namespace VRAtis.Weapons
             {
                 Quaternion rifleAimRot = Quaternion.LookRotation(playerRifleTransform.forward, playerRifleTransform.up);
                 mainCameraTransform.rotation = Quaternion.Slerp(readyRot, rifleAimRot, _easedAim01);
+                _wasAligningRotation = true;
             }
-            else if (headTracker != null)
+            else if (_wasAligningRotation)
             {
-                mainCameraTransform.rotation = readyRot;
+                // Mobile sensor became active mid-aim: hand rotation back to HeadTrackingCameraController once
+                if (headTracker != null)
+                    mainCameraTransform.rotation = readyRot;
+                _wasAligningRotation = false;
             }
+        }
 
-            if (stereoRig != null)
-            {
-                float zoomDeg = CardboardStereoRig.IsStereoSplitActive ? vrFovZoomDeg : singleScreenFovZoomDeg;
-                stereoRig.SetDynamicFovOffset(-_easedAim01 * zoomDeg);
-            }
+        private void ApplyReticlePowerIfChanged(float ledPower)
+        {
+            if (redDotSight == null)
+                return;
+
+            if (Mathf.Abs(_lastAppliedReticlePower - ledPower) <= 0.0005f)
+                return;
+
+            _lastAppliedReticlePower = ledPower;
+            redDotSight.SetReticlePower(ledPower);
         }
 
         private void ResolveReferences()

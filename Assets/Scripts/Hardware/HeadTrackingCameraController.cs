@@ -39,13 +39,13 @@ namespace VRAtis.Hardware
         [Tooltip("Yavaş kafa hareketlerinde mikro sensör basamaklarını ütüler, hızlı dönüşte gecikmeyi sıfıra yaklaştırır.")]
         [SerializeField] private bool enableAdaptiveSmoothing = true;
 
-        [Range(8f, 45f)]
-        [SerializeField] private float minSmoothingSpeed = 18f;
+        [Range(8f, 60f)]
+        [SerializeField] private float minSmoothingSpeed = 32f;
 
         [Range(60f, 180f)]
-        [SerializeField] private float maxSmoothingSpeed = 120f;
+        [SerializeField] private float maxSmoothingSpeed = 125f;
 
-        [SerializeField] private float fastTurnSpeedDegPerSec = 55f;
+        [SerializeField] private float fastTurnSpeedDegPerSec = 45f;
 
         [Header("PC / Editör Fare Önizleme (Sensör Yokken)")]
         [Tooltip("PC Editörde sağ tık basılı tutarak etrafa bakmayı etkinleştirir.")]
@@ -67,13 +67,22 @@ namespace VRAtis.Hardware
         private float _pcPitchDeg;
         private float _twoFingerCooldown;
 
-        // 1-Euro angular velocity tracking across sensor updates
+        // Gyroscope + Attitude velocity-predicted filter state across 120Hz frames
+#if ENABLE_INPUT_SYSTEM
         private AttitudeSensor _activeSensor;
+        private UnityEngine.InputSystem.Gyroscope _activeGyro;
+#endif
+        private bool _gyroHasValidReadings;
         private Quaternion _lastWorldSample = Quaternion.identity;
+        private Quaternion _lastTargetSample = Quaternion.identity;
         private Quaternion _smoothedHeadRot = Quaternion.identity;
         private Vector3 _readyPosition;
+        private Vector3 _attitudeAngularVelocityVec;
+        private Vector3 _smoothedAngularVelocityVec;
         private float _elapsedSinceSample;
         private float _estimatedHeadSpeedDegPerSec;
+        private float _smoothedFrameDt = 1f / 120f;
+        private float _smoothedCutoff = 32f;
 
         public bool IsUsingMobileSensor => _sensorReady;
         public Vector3 ReadyWorldPosition => _readyPosition;
@@ -84,6 +93,14 @@ namespace VRAtis.Hardware
             _readyPosition = transform.position;
             _smoothedHeadRot = transform.rotation;
 
+            // Upgrade legacy serialized filter values that caused slow-turn phase stepping on 120Hz VR
+            if (minSmoothingSpeed < 28f)
+                minSmoothingSpeed = 32f;
+            if (fastTurnSpeedDegPerSec > 48f)
+                fastTurnSpeedDegPerSec = 45f;
+
+            _smoothedCutoff = minSmoothingSpeed;
+
             if (rifleOrientationController == null)
                 rifleOrientationController = FindAnyObjectByType<RifleOrientationController>();
 
@@ -92,24 +109,48 @@ namespace VRAtis.Hardware
             {
                 _initialForwardYaw = Quaternion.LookRotation(flatFwd.normalized, Vector3.up);
                 _smoothedHeadRot = _initialForwardYaw;
+                _lastTargetSample = _initialForwardYaw;
             }
         }
 
         private void OnEnable()
         {
-            if (Application.isMobilePlatform && lockLandscapeOnMobile)
+            if (Application.isMobilePlatform)
             {
-                Screen.orientation = ScreenOrientation.LandscapeLeft;
-                Screen.sleepTimeout = SleepTimeout.NeverSleep;
+                QualitySettings.vSyncCount = 0;
+                Application.targetFrameRate = 120;
+
+                if (lockLandscapeOnMobile)
+                {
+                    Screen.orientation = ScreenOrientation.LandscapeLeft;
+                    Screen.sleepTimeout = SleepTimeout.NeverSleep;
+                }
             }
 
+#if ENABLE_INPUT_SYSTEM
+            if (InputSystem.settings != null &&
+                InputSystem.settings.updateMode == InputSettings.UpdateMode.ProcessEventsInFixedUpdate)
+            {
+                InputSystem.settings.updateMode = InputSettings.UpdateMode.ProcessEventsInDynamicUpdate;
+            }
+#endif
+
             EnablePhoneSensor();
+            Application.onBeforeRender += OnBeforeRenderHeadTrack;
+        }
+
+        private void OnDisable()
+        {
+            Application.onBeforeRender -= OnBeforeRenderHeadTrack;
         }
 
         private void Update()
         {
+            float rawDt = Mathf.Clamp(Time.unscaledDeltaTime, 0.001f, 0.05f);
+            _smoothedFrameDt = Mathf.Lerp(_smoothedFrameDt, rawDt, 0.25f);
+
             if (_twoFingerCooldown > 0f)
-                _twoFingerCooldown -= Time.unscaledDeltaTime;
+                _twoFingerCooldown -= rawDt;
 
             bool wantRecenter = false;
 #if ENABLE_INPUT_SYSTEM
@@ -137,7 +178,7 @@ namespace VRAtis.Hardware
             if (TryReadPhoneAttitude(out Quaternion worldHeadRot))
             {
                 _sensorReady = true;
-                _elapsedSinceSample += Time.unscaledDeltaTime;
+                _elapsedSinceSample += rawDt;
 
                 if ((autoZeroYawOnFirstReading && !_hasZeroedSensor) || wantRecenter)
                 {
@@ -145,9 +186,13 @@ namespace VRAtis.Hardware
                     _lastWorldSample = worldHeadRot;
                     _elapsedSinceSample = 0f;
                     _estimatedHeadSpeedDegPerSec = 0f;
+                    _attitudeAngularVelocityVec = Vector3.zero;
+                    _smoothedAngularVelocityVec = Vector3.zero;
 
                     ApplySensorYawZero(worldHeadRot);
                     _smoothedHeadRot = _sensorYawOffset * worldHeadRot;
+                    _lastTargetSample = _smoothedHeadRot;
+                    _smoothedCutoff = Mathf.Max(28f, minSmoothingSpeed);
                     transform.rotation = _smoothedHeadRot;
 
                     if (wantRecenter && rifleOrientationController != null)
@@ -155,29 +200,74 @@ namespace VRAtis.Hardware
                     return;
                 }
 
-                float sampleDeltaDeg = Quaternion.Angle(_lastWorldSample, worldHeadRot);
-                if (sampleDeltaDeg > 0.002f && _elapsedSinceSample > 0.0005f)
+                Quaternion targetRot = _sensorYawOffset * worldHeadRot;
+
+                // Use atan2-based exact quaternion delta to avoid Unity Quaternion.Angle's 0.162 deg deadzone
+                ComputeExactAngleAxis(_lastTargetSample, targetRot, out float sampleDeltaDeg, out Vector3 sampleAxis);
+                if (sampleDeltaDeg > 0.0004f && _elapsedSinceSample > 0.0005f)
                 {
-                    float dt = Mathf.Clamp(_elapsedSinceSample, 0.002f, 0.1f);
-                    float instantSpeed = Mathf.Clamp(sampleDeltaDeg / dt, 0f, 600f);
-                    _estimatedHeadSpeedDegPerSec = Mathf.Lerp(_estimatedHeadSpeedDegPerSec, instantSpeed, 0.50f);
+                    float sampleDt = Mathf.Clamp(_elapsedSinceSample, 0.0025f, 0.1f);
+                    float instantSpeed = Mathf.Clamp(sampleDeltaDeg / sampleDt, 0f, 720f);
+                    Vector3 instantVel = sampleAxis * instantSpeed;
+                    _attitudeAngularVelocityVec = Vector3.Lerp(_attitudeAngularVelocityVec, instantVel, 0.55f);
                     _lastWorldSample = worldHeadRot;
+                    _lastTargetSample = targetRot;
                     _elapsedSinceSample = 0f;
                 }
-                else if (_elapsedSinceSample > 0.05f)
+                else if (_elapsedSinceSample > 0.015f)
                 {
-                    _estimatedHeadSpeedDegPerSec = Mathf.Lerp(_estimatedHeadSpeedDegPerSec, 0f, 0.35f);
+                    float decay = Mathf.Exp(-(_elapsedSinceSample - 0.015f) * 45f);
+                    _attitudeAngularVelocityVec *= decay;
                 }
 
-                Quaternion targetRot = _sensorYawOffset * worldHeadRot;
+                if (TryReadPhoneGyroWorld(targetRot, out Vector3 gyroWorldVel))
+                {
+                    if (gyroWorldVel.sqrMagnitude < 0.12f)
+                        gyroWorldVel = Vector3.zero;
+
+                    Vector3 fusedVel = Vector3.Lerp(_attitudeAngularVelocityVec, gyroWorldVel, 0.65f);
+                    _smoothedAngularVelocityVec = Vector3.Lerp(_smoothedAngularVelocityVec, fusedVel, 0.60f);
+                }
+                else
+                {
+                    _smoothedAngularVelocityVec = _attitudeAngularVelocityVec;
+                }
+
+                _estimatedHeadSpeedDegPerSec = _smoothedAngularVelocityVec.magnitude;
+
                 if (enableAdaptiveSmoothing)
                 {
-                    float frameGapDeg = Quaternion.Angle(_smoothedHeadRot, targetRot);
-                    float speed = Mathf.Max(_estimatedHeadSpeedDegPerSec, frameGapDeg * 12f);
-                    float speedFactor = Mathf.Clamp01(speed / Mathf.Max(10f, fastTurnSpeedDegPerSec));
-                    float adaptiveCutoff = Mathf.Lerp(minSmoothingSpeed, maxSmoothingSpeed, speedFactor);
-                    float t = 1f - Mathf.Exp(-adaptiveCutoff * Time.unscaledDeltaTime);
-                    _smoothedHeadRot = Quaternion.Slerp(_smoothedHeadRot, targetRot, t);
+                    // 1) Dead-reckon targetRot across frames where AttitudeSensor has not ticked yet (100Hz vs 120Hz beat)
+                    Quaternion effectiveTargetRot = targetRot;
+                    if (_elapsedSinceSample > 0.0005f && _estimatedHeadSpeedDegPerSec > 0.6f)
+                    {
+                        float extrapSec = Mathf.Min(_elapsedSinceSample, 0.016f);
+                        float horizonDecay = Mathf.Exp(-extrapSec * 25f);
+                        float extrapAngleDeg = _estimatedHeadSpeedDegPerSec * extrapSec * horizonDecay;
+                        Vector3 velAxis = _smoothedAngularVelocityVec / _estimatedHeadSpeedDegPerSec;
+                        effectiveTargetRot = Quaternion.AngleAxis(extrapAngleDeg, velAxis) * targetRot;
+                    }
+
+                    // 2) Advance current smoothed head rotation by continuous angular velocity feedforward
+                    Quaternion predictedHeadRot = _smoothedHeadRot;
+                    if (_estimatedHeadSpeedDegPerSec > 0.6f)
+                    {
+                        float motionGate = Mathf.SmoothStep(0f, 0.85f, (_estimatedHeadSpeedDegPerSec - 0.6f) / 3.0f);
+                        float stepAngleDeg = _estimatedHeadSpeedDegPerSec * _smoothedFrameDt * motionGate;
+                        Vector3 velAxis = _smoothedAngularVelocityVec / _estimatedHeadSpeedDegPerSec;
+                        predictedHeadRot = Quaternion.AngleAxis(stepAngleDeg, velAxis) * _smoothedHeadRot;
+                    }
+
+                    // 3) Smoothly filtered adaptive cutoff to eliminate lag-buffer expansion/compression stepping
+                    ComputeExactAngleAxis(predictedHeadRot, effectiveTargetRot, out float residualGapDeg, out _);
+                    float effectiveMinCutoff = Mathf.Max(28f, minSmoothingSpeed);
+                    float speed = Mathf.Max(_estimatedHeadSpeedDegPerSec, residualGapDeg * 18f);
+                    float speedFactor = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(speed / Mathf.Max(10f, fastTurnSpeedDegPerSec)));
+                    float desiredCutoff = Mathf.Lerp(effectiveMinCutoff, maxSmoothingSpeed, speedFactor);
+                    _smoothedCutoff = Mathf.Lerp(_smoothedCutoff, desiredCutoff, 1f - Mathf.Exp(-20f * rawDt));
+
+                    float t = 1f - Mathf.Exp(-_smoothedCutoff * rawDt);
+                    _smoothedHeadRot = Quaternion.Slerp(predictedHeadRot, effectiveTargetRot, t);
                     transform.rotation = _smoothedHeadRot;
                 }
                 else
@@ -196,6 +286,7 @@ namespace VRAtis.Hardware
                 _pcYawOffsetDeg = 0f;
                 _pcPitchDeg = 0f;
                 _smoothedHeadRot = _initialForwardYaw;
+                _lastTargetSample = _initialForwardYaw;
                 transform.rotation = _smoothedHeadRot;
                 if (rifleOrientationController != null)
                     rifleOrientationController.RecenterToHeadForward();
@@ -203,6 +294,36 @@ namespace VRAtis.Hardware
             }
 
             UpdateEditorMouseLook();
+        }
+
+        private void OnBeforeRenderHeadTrack()
+        {
+            if (!_sensorReady || !_hasZeroedSensor)
+                return;
+
+            if (TryReadPhoneAttitude(out Quaternion worldHeadRot))
+            {
+                Quaternion targetRot = _sensorYawOffset * worldHeadRot;
+                ComputeExactAngleAxis(_lastTargetSample, targetRot, out float lateDeltaDeg, out _);
+                if (lateDeltaDeg > 0.0004f && lateDeltaDeg < 25f)
+                {
+                    _lastWorldSample = worldHeadRot;
+                    _lastTargetSample = targetRot;
+                    _elapsedSinceSample = 0f;
+
+                    if (enableAdaptiveSmoothing)
+                    {
+                        float lateBlend = Mathf.Clamp01(_smoothedCutoff * 0.004f);
+                        _smoothedHeadRot = Quaternion.Slerp(_smoothedHeadRot, targetRot, lateBlend);
+                    }
+                    else
+                    {
+                        _smoothedHeadRot = targetRot;
+                    }
+                }
+            }
+
+            transform.rotation = _smoothedHeadRot;
         }
 
         /// <summary>
@@ -215,9 +336,13 @@ namespace VRAtis.Hardware
             {
                 _hasZeroedSensor = true;
                 _lastWorldSample = worldHeadRot;
+                _elapsedSinceSample = 0f;
                 _estimatedHeadSpeedDegPerSec = 0f;
+                _attitudeAngularVelocityVec = Vector3.zero;
+                _smoothedAngularVelocityVec = Vector3.zero;
                 ApplySensorYawZero(worldHeadRot);
                 _smoothedHeadRot = _sensorYawOffset * worldHeadRot;
+                _lastTargetSample = _smoothedHeadRot;
                 transform.rotation = _smoothedHeadRot;
             }
             else
@@ -225,6 +350,7 @@ namespace VRAtis.Hardware
                 _pcYawOffsetDeg = 0f;
                 _pcPitchDeg = 0f;
                 _smoothedHeadRot = _initialForwardYaw;
+                _lastTargetSample = _initialForwardYaw;
                 transform.rotation = _smoothedHeadRot;
             }
 
@@ -232,9 +358,9 @@ namespace VRAtis.Hardware
                 rifleOrientationController.RecenterToHeadForward();
         }
 
+#if ENABLE_INPUT_SYSTEM
         private AttitudeSensor ResolvePreferredSensor()
         {
-#if ENABLE_INPUT_SYSTEM
 #if UNITY_EDITOR || UNITY_ANDROID
             if (preferGameRotationVector)
             {
@@ -244,29 +370,63 @@ namespace VRAtis.Hardware
             }
 #endif
             return AttitudeSensor.current;
-#else
-            return null;
-#endif
         }
+
+        private UnityEngine.InputSystem.Gyroscope ResolveGyroscope()
+        {
+#if UNITY_EDITOR || UNITY_ANDROID
+            AndroidGyroscope androidGyro = InputSystem.GetDevice<AndroidGyroscope>();
+            if (androidGyro != null)
+                return androidGyro;
+#endif
+            return UnityEngine.InputSystem.Gyroscope.current;
+        }
+#endif
 
         private void EnablePhoneSensor()
         {
 #if ENABLE_INPUT_SYSTEM
-            AttitudeSensor sensor = ResolvePreferredSensor();
-            if (sensor == null)
-                return;
-
-            _activeSensor = sensor;
-            if (!sensor.enabled)
-                InputSystem.EnableDevice(sensor);
-
             try
             {
-                sensor.samplingFrequency = requestedSensorRateHz;
+                InputSystem.pollingFrequency = Mathf.Max(120f, requestedSensorRateHz);
             }
             catch
             {
-                // Some devices lock sampling rate or don't support SetSamplingFrequencyCommand
+                // Ignore if platform backend does not support custom pollingFrequency
+            }
+
+            AttitudeSensor sensor = ResolvePreferredSensor();
+            if (sensor != null)
+            {
+                _activeSensor = sensor;
+                if (!sensor.enabled)
+                    InputSystem.EnableDevice(sensor);
+
+                try
+                {
+                    sensor.samplingFrequency = requestedSensorRateHz;
+                }
+                catch
+                {
+                    // Some devices lock sampling rate or don't support SetSamplingFrequencyCommand
+                }
+            }
+
+            UnityEngine.InputSystem.Gyroscope gyro = ResolveGyroscope();
+            if (gyro != null)
+            {
+                _activeGyro = gyro;
+                if (!gyro.enabled)
+                    InputSystem.EnableDevice(gyro);
+
+                try
+                {
+                    gyro.samplingFrequency = requestedSensorRateHz;
+                }
+                catch
+                {
+                    // Ignore if gyroscope sampling frequency is locked by HAL
+                }
             }
 #endif
         }
@@ -289,13 +449,81 @@ namespace VRAtis.Hardware
                 float normSq = rawQ.x * rawQ.x + rawQ.y * rawQ.y + rawQ.z * rawQ.z + rawQ.w * rawQ.w;
                 if (normSq > 1e-4f)
                 {
-                    worldHeadRot = AttitudeBaseRotation * new Quaternion(rawQ.x, rawQ.y, -rawQ.z, -rawQ.w);
+                    float invNorm = 1f / Mathf.Sqrt(normSq);
+                    worldHeadRot = AttitudeBaseRotation * new Quaternion(
+                        rawQ.x * invNorm,
+                        rawQ.y * invNorm,
+                        -rawQ.z * invNorm,
+                        -rawQ.w * invNorm);
                     return true;
                 }
             }
 #endif
             worldHeadRot = Quaternion.identity;
             return false;
+        }
+
+        private bool TryReadPhoneGyroWorld(Quaternion currentTargetRot, out Vector3 worldAngularVelDegPerSec)
+        {
+#if ENABLE_INPUT_SYSTEM
+            UnityEngine.InputSystem.Gyroscope gyro = _activeGyro ?? ResolveGyroscope();
+            if (gyro != null)
+            {
+                if (_activeGyro != gyro || !gyro.enabled)
+                {
+                    _activeGyro = gyro;
+                    if (!gyro.enabled)
+                        InputSystem.EnableDevice(gyro);
+                    try { gyro.samplingFrequency = requestedSensorRateHz; } catch { }
+                }
+
+                Vector3 rawRadPerSec = gyro.angularVelocity.ReadValue();
+                float sqrMag = rawRadPerSec.sqrMagnitude;
+                if (sqrMag > 1e-7f && sqrMag < 1000f)
+                    _gyroHasValidReadings = true;
+
+                if (_gyroHasValidReadings && sqrMag < 1000f)
+                {
+                    Vector3 localDegPerSec = new Vector3(-rawRadPerSec.x, -rawRadPerSec.y, rawRadPerSec.z) * Mathf.Rad2Deg;
+                    worldAngularVelDegPerSec = Vector3.ClampMagnitude(currentTargetRot * localDegPerSec, 720f);
+                    return true;
+                }
+            }
+#endif
+            worldAngularVelDegPerSec = Vector3.zero;
+            return false;
+        }
+
+        private static void ComputeExactAngleAxis(Quaternion from, Quaternion to, out float angleDeg, out Vector3 axis)
+        {
+            Quaternion invFrom = new Quaternion(-from.x, -from.y, -from.z, from.w);
+            Quaternion delta = new Quaternion(
+                to.w * invFrom.x + to.x * invFrom.w + to.y * invFrom.z - to.z * invFrom.y,
+                to.w * invFrom.y - to.x * invFrom.z + to.y * invFrom.w + to.z * invFrom.x,
+                to.w * invFrom.z + to.x * invFrom.y - to.y * invFrom.x + to.z * invFrom.w,
+                to.w * invFrom.w - to.x * invFrom.x - to.y * invFrom.y - to.z * invFrom.z);
+
+            if (delta.w < 0f)
+            {
+                delta.x = -delta.x;
+                delta.y = -delta.y;
+                delta.z = -delta.z;
+                delta.w = -delta.w;
+            }
+
+            float sinHalfSq = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+            if (sinHalfSq > 1e-12f)
+            {
+                float sinHalf = Mathf.Sqrt(sinHalfSq);
+                angleDeg = 2f * Mathf.Atan2(sinHalf, Mathf.Clamp(delta.w, 0f, 1f)) * Mathf.Rad2Deg;
+                float invSin = 1f / sinHalf;
+                axis = new Vector3(delta.x * invSin, delta.y * invSin, delta.z * invSin);
+            }
+            else
+            {
+                angleDeg = 0f;
+                axis = Vector3.up;
+            }
         }
 
         private void ApplySensorYawZero(Quaternion worldHeadRot)

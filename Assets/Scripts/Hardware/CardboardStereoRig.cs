@@ -17,6 +17,7 @@ namespace VRAtis.Hardware
     public class CardboardStereoRig : MonoBehaviour
     {
         private const string PrefsLensSpacingKey = "VRAtis_LensSpacingMm_V2";
+        private const int BackdropSwapchainClearFrames = 8;
         public const float DefaultLensSpacingMm = 66f;
 
         public static bool IsStereoSplitActive { get; private set; }
@@ -77,6 +78,7 @@ namespace VRAtis.Hardware
         private float _lastAppliedSingleFov;
         private int _lastScreenWidth;
         private int _lastScreenHeight;
+        private int _backdropClearFramesRemaining;
         private float _cachedPhysicalWidthMm;
         private float _dynamicFovDeltaDeg;
         private GUIStyle _calibBtnStyle;
@@ -86,7 +88,7 @@ namespace VRAtis.Hardware
 
         public void SetDynamicFovOffset(float fovDeltaDeg)
         {
-            if (Mathf.Approximately(_dynamicFovDeltaDeg, fovDeltaDeg))
+            if (Mathf.Abs(_dynamicFovDeltaDeg - fovDeltaDeg) < 0.0005f)
                 return;
 
             _dynamicFovDeltaDeg = fovDeltaDeg;
@@ -147,6 +149,12 @@ namespace VRAtis.Hardware
             _mainUrpData = GetComponent<UniversalAdditionalCameraData>();
             _originalMainTag = gameObject.tag;
 
+            if (_mainCam != null)
+            {
+                _mainCam.useOcclusionCulling = false;
+                _mainCam.layerCullSpherical = true;
+            }
+
             if (PlayerPrefs.HasKey(PrefsLensSpacingKey))
                 lensCenterSpacingMm = Mathf.Clamp(PlayerPrefs.GetFloat(PrefsLensSpacingKey, lensCenterSpacingMm), 52f, 74f);
 
@@ -172,31 +180,77 @@ namespace VRAtis.Hardware
                 IsStereoSplitActive = false;
         }
 
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            if (hasFocus && IsStereoSplitActive)
+                ScheduleBackdropSwapchainClear();
+        }
+
+        private void OnApplicationPause(bool pauseStatus)
+        {
+            if (!pauseStatus && IsStereoSplitActive)
+                ScheduleBackdropSwapchainClear();
+        }
+
         private void Update()
         {
 #if ENABLE_INPUT_SYSTEM
-            if (allowVKeyToggle && Keyboard.current != null && Keyboard.current.f2Key.wasPressedThisFrame)
-                enableSplitScreen = !enableSplitScreen;
-
-            if (Keyboard.current != null)
+            if (!Application.isMobilePlatform || Application.isEditor)
             {
-                if (Keyboard.current.leftBracketKey.wasPressedThisFrame)
-                    NudgeLensSpacingMm(-1f);
-                else if (Keyboard.current.rightBracketKey.wasPressedThisFrame)
-                    NudgeLensSpacingMm(+1f);
+                Keyboard kb = Keyboard.current;
+                if (kb != null)
+                {
+                    if (allowVKeyToggle && kb.f2Key.wasPressedThisFrame)
+                        enableSplitScreen = !enableSplitScreen;
+
+                    if (kb.leftBracketKey.wasPressedThisFrame)
+                        NudgeLensSpacingMm(-1f);
+                    else if (kb.rightBracketKey.wasPressedThisFrame)
+                        NudgeLensSpacingMm(+1f);
+                }
             }
 #endif
 
+            int screenW = Screen.width;
+            int screenH = Screen.height;
+
             if (!_appliedStateInitialized ||
                 _lastAppliedSplitState != enableSplitScreen ||
-                !Mathf.Approximately(_lastAppliedLensSpacingMm, lensCenterSpacingMm) ||
-                !Mathf.Approximately(_lastAppliedVirtualIpdMm, virtualEyeIpdMm) ||
-                !Mathf.Approximately(_lastAppliedVrFov, vrVerticalFov) ||
-                !Mathf.Approximately(_lastAppliedSingleFov, singleScreenFov) ||
-                _lastScreenWidth != Screen.width ||
-                _lastScreenHeight != Screen.height)
+                _lastAppliedLensSpacingMm != lensCenterSpacingMm ||
+                _lastAppliedVirtualIpdMm != virtualEyeIpdMm ||
+                _lastAppliedVrFov != vrVerticalFov ||
+                _lastAppliedSingleFov != singleScreenFov ||
+                _lastScreenWidth != screenW ||
+                _lastScreenHeight != screenH)
             {
                 ApplyStereoMode(forceSync: false);
+            }
+
+            if (_backdropClearFramesRemaining > 0)
+            {
+                _backdropClearFramesRemaining--;
+                if (_backdropClearFramesRemaining <= 0 && _backdropClearCam != null)
+                    _backdropClearCam.enabled = false;
+            }
+        }
+
+        private void ScheduleBackdropSwapchainClear()
+        {
+            if (_backdropClearCam == null)
+                return;
+
+            bool hasOuterBorders = drawBlackMaskBorders &&
+                                   (LeftEyeViewportNorm.x > 0.001f || RightEyeViewportNorm.xMax < 0.999f);
+            if (hasOuterBorders)
+            {
+                _backdropClearFramesRemaining = BackdropSwapchainClearFrames;
+                _backdropClearCam.depth = _mainCam != null ? _mainCam.depth - 10f : -11f;
+                _backdropClearCam.enabled = true;
+            }
+            else
+            {
+                _backdropClearFramesRemaining = 0;
+                _backdropClearCam.enabled = false;
             }
         }
 
@@ -206,6 +260,12 @@ namespace VRAtis.Hardware
                 _mainCam = GetComponent<Camera>();
             if (_mainUrpData == null)
                 _mainUrpData = GetComponent<UniversalAdditionalCameraData>();
+
+            if (_mainCam != null)
+            {
+                _mainCam.useOcclusionCulling = false;
+                _mainCam.layerCullSpherical = true;
+            }
 
             _appliedStateInitialized = true;
             _lastAppliedSplitState = enableSplitScreen;
@@ -249,11 +309,7 @@ namespace VRAtis.Hardware
                 _leftEyeCam.gameObject.tag = string.IsNullOrEmpty(_originalMainTag) ? "MainCamera" : _originalMainTag;
                 _rightEyeCam.gameObject.tag = "Untagged";
 
-                if (_backdropClearCam != null)
-                {
-                    _backdropClearCam.depth = _mainCam.depth - 10f;
-                    _backdropClearCam.enabled = drawBlackMaskBorders;
-                }
+                ScheduleBackdropSwapchainClear();
 
                 _leftEyeCam.enabled = true;
                 _rightEyeCam.enabled = true;
@@ -319,6 +375,7 @@ namespace VRAtis.Hardware
 
         private void RestoreSingleScreenState()
         {
+            _backdropClearFramesRemaining = 0;
             if (_backdropClearCam != null)
                 _backdropClearCam.enabled = false;
             if (_leftEyeCam != null)
@@ -331,6 +388,8 @@ namespace VRAtis.Hardware
 
             if (_mainCam != null)
             {
+                _mainCam.useOcclusionCulling = false;
+                _mainCam.layerCullSpherical = true;
                 _mainCam.rect = new Rect(0f, 0f, 1f, 1f);
                 _mainCam.fieldOfView = Mathf.Clamp(singleScreenFov + _dynamicFovDeltaDeg, 35f, 95f);
                 _mainCam.enabled = true;
@@ -350,12 +409,21 @@ namespace VRAtis.Hardware
                 _backdropClearCam.useOcclusionCulling = false;
                 _backdropClearCam.allowHDR = false;
                 _backdropClearCam.allowMSAA = false;
+                _backdropClearCam.orthographic = true;
+                _backdropClearCam.nearClipPlane = 0.5f;
+                _backdropClearCam.farClipPlane = 1f;
                 _backdropClearCam.rect = new Rect(0f, 0f, 1f, 1f);
                 UniversalAdditionalCameraData bdUrp = _backdropClearCam.GetComponent<UniversalAdditionalCameraData>();
                 if (bdUrp != null)
                 {
                     bdUrp.renderShadows = false;
                     bdUrp.renderPostProcessing = false;
+                    bdUrp.antialiasing = AntialiasingMode.None;
+                    bdUrp.volumeLayerMask = 0;
+                    bdUrp.requiresDepthOption = CameraOverrideOption.Off;
+                    bdUrp.requiresColorOption = CameraOverrideOption.Off;
+                    bdUrp.stopNaN = false;
+                    bdUrp.dithering = false;
                 }
             }
             if (_leftEyeCam == null)
@@ -395,7 +463,8 @@ namespace VRAtis.Hardware
             eyeCam.depth = _mainCam.depth;
             eyeCam.allowHDR = _mainCam.allowHDR;
             eyeCam.allowMSAA = _mainCam.allowMSAA;
-            eyeCam.useOcclusionCulling = _mainCam.useOcclusionCulling;
+            eyeCam.useOcclusionCulling = false;
+            eyeCam.layerCullSpherical = true;
             eyeCam.rect = viewportRect;
 
             UniversalAdditionalCameraData eyeUrp = eyeCam.GetComponent<UniversalAdditionalCameraData>();
@@ -406,8 +475,11 @@ namespace VRAtis.Hardware
                 eyeUrp.antialiasing = _mainUrpData.antialiasing;
                 eyeUrp.antialiasingQuality = _mainUrpData.antialiasingQuality;
                 eyeUrp.volumeLayerMask = _mainUrpData.volumeLayerMask;
-                eyeUrp.requiresDepthOption = _mainUrpData.requiresDepthOption;
-                eyeUrp.requiresColorOption = _mainUrpData.requiresColorOption;
+                eyeUrp.volumeTrigger = transform;
+                eyeUrp.requiresDepthOption = CameraOverrideOption.Off;
+                eyeUrp.requiresColorOption = CameraOverrideOption.Off;
+                eyeUrp.stopNaN = false;
+                eyeUrp.dithering = false;
             }
         }
 

@@ -9,7 +9,7 @@ namespace VRAtis.EditorTools
     [InitializeOnLoad]
     public static class CameraSetupTool
     {
-        private const string AutoSetupVersionKey = "VRAtis_Camera_V6_Done";
+        private const string AutoSetupVersionKey = "VRAtis_Camera_V7_Done";
 
         static CameraSetupTool()
         {
@@ -87,6 +87,10 @@ namespace VRAtis.EditorTools
             {
                 SerializedObject trackerSo = new SerializedObject(headTracker);
                 trackerSo.FindProperty("rifleOrientationController").objectReferenceValue = rifleCtrl;
+                trackerSo.FindProperty("requestedSensorRateHz").floatValue = 200f;
+                trackerSo.FindProperty("minSmoothingSpeed").floatValue = 32f;
+                trackerSo.FindProperty("maxSmoothingSpeed").floatValue = 125f;
+                trackerSo.FindProperty("fastTurnSpeedDegPerSec").floatValue = 45f;
                 trackerSo.ApplyModifiedPropertiesWithoutUndo();
 
                 SerializedObject rifleSo = new SerializedObject(rifleCtrl);

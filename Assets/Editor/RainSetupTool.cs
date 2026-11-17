@@ -10,15 +10,14 @@ namespace VRAtis.Editor
     [InitializeOnLoad]
     public static class RainSetupTool
     {
-        private const string AutoSetupDoneKey = "VRAtis_RainWeather_V5_Done";
+        private const string AutoSetupDoneKey = "VRAtis_RainWeather_V6_Done";
         private const string RootObjectName = "Environment_RainWeather";
         private const string WeatherDir = "Assets/Models/Environment/Weather";
         private const string MeshDir = "Assets/Models/Environment/Weather/Meshes";
         private const string EnvMatDir = "Assets/Materials/Environment";
         private const string RainAudioPath = "Assets/Audio/Environment/Rain_Steady_01.wav";
 
-        private static readonly Vector3 NearBoxSize = new Vector3(16f, 13f, 16f);
-        private static readonly Vector3 MidBoxSize = new Vector3(40f, 18f, 40f);
+        private static readonly Vector3 RainBoxSize = new Vector3(8.5f, 7.5f, 8.5f);
 
         static RainSetupTool()
         {
@@ -68,52 +67,31 @@ namespace VRAtis.Editor
             ConfigureTextureImporter(streakTexPath, maxSize: 256, enableMipMaps: true);
             ConfigureTextureImporter(splashTexPath, maxSize: 128, enableMipMaps: true);
 
-            Mesh nearMesh = BuildOrUpdateRainDropMesh(
-                $"{MeshDir}/NearRainDropsMesh.asset",
-                "NearRainDropsMesh",
-                dropCount: 2200,
-                boxSize: NearBoxSize,
+            Mesh rainMesh = BuildOrUpdateRainDropMesh(
+                $"{MeshDir}/RainVolumeDropsMesh.asset",
+                "RainVolumeDropsMesh",
+                dropCount: 1250,
+                boxSize: RainBoxSize,
                 seed: 19487);
 
-            Mesh midMesh = BuildOrUpdateRainDropMesh(
-                $"{MeshDir}/MidRainDropsMesh.asset",
-                "MidRainDropsMesh",
-                dropCount: 2400,
-                boxSize: MidBoxSize,
-                seed: 63211);
-
-            Material nearMat = BuildGpuRainMaterial(
-                "RainNearGPU_Mat",
+            Material rainMat = BuildGpuRainMaterial(
+                "RainVolumeGPU_Mat",
                 rainShader,
                 streakTexPath,
-                new Color(0.84f, 0.90f, 0.96f, 0.72f),
-                NearBoxSize,
-                baseFallSpeed: 19.5f,
-                minLen: 0.65f,
-                maxLen: 1.20f,
-                minWidth: 0.055f,
-                maxWidth: 0.115f,
-                nearFadeStart: 0.65f,
-                nearFadeEnd: 1.65f);
-
-            Material midMat = BuildGpuRainMaterial(
-                "RainMidGPU_Mat",
-                rainShader,
-                streakTexPath,
-                new Color(0.80f, 0.86f, 0.93f, 0.48f),
-                MidBoxSize,
-                baseFallSpeed: 16.5f,
-                minLen: 0.90f,
-                maxLen: 1.65f,
-                minWidth: 0.13f,
-                maxWidth: 0.25f,
-                nearFadeStart: 4.5f,
-                nearFadeEnd: 9.0f);
+                new Color(0.83f, 0.89f, 0.96f, 0.70f),
+                RainBoxSize,
+                baseFallSpeed: 19.0f,
+                minLen: 0.55f,
+                maxLen: 1.12f,
+                minWidth: 0.045f,
+                maxWidth: 0.095f,
+                nearFadeStart: 0.55f,
+                nearFadeEnd: 1.35f);
 
             Material splashMat = BuildRainParticleMaterial(
                 "RainSplash_Mat",
                 splashTexPath,
-                new Color(0.82f, 0.89f, 0.95f, 0.75f),
+                new Color(0.82f, 0.89f, 0.95f, 0.72f),
                 nearFadeMeters: 0.4f,
                 farFadeMeters: 1.0f);
 
@@ -131,12 +109,11 @@ namespace VRAtis.Editor
             GameObject root = new GameObject(RootObjectName);
             RainWeatherController controller = root.AddComponent<RainWeatherController>();
 
-            MeshRenderer nearRenderer = CreateGpuRainLayerObject(root.transform, "GPU_NearRain", nearMesh, nearMat);
-            MeshRenderer midRenderer = CreateGpuRainLayerObject(root.transform, "GPU_MidRain", midMesh, midMat);
+            MeshRenderer rainRenderer = CreateGpuRainLayerObject(root.transform, "GPU_RainVolume", rainMesh, rainMat);
             ParticleSystem splashPs = CreateGroundSplashEmitter(root.transform, splashMat);
             CreateRainAudioObject(root.transform, rainClip, out AudioSource rainAudioSource, out AudioLowPassFilter rainLowPass);
 
-            WireControllerReferences(controller, envMgr, nearRenderer, midRenderer, splashPs, rainClip, rainAudioSource, rainLowPass);
+            WireControllerReferences(controller, envMgr, rainRenderer, splashPs, rainClip, rainAudioSource, rainLowPass);
 
             EditorUtility.SetDirty(controller);
             EditorUtility.SetDirty(root);
@@ -144,7 +121,7 @@ namespace VRAtis.Editor
             AssetDatabase.SaveAssets();
             EditorSceneManager.SaveOpenScenes();
 
-            Debug.Log("[RainSetupTool] V5 Kuruldu: 4.600 bağımsız rastgele GPU yağmur damlası + rüzgara bağlı açı + zemin sıçramaları + stereo yağmur sesi!");
+            Debug.Log("[RainSetupTool] V6 Kuruldu: Kamera bakış yönüne odaklı tek katmanlı 1.250 GPU yağmur damlası (1 draw call) + hafifletilmiş sıçramalar!");
             return true;
         }
 
@@ -156,6 +133,10 @@ namespace VRAtis.Editor
                 $"{WeatherDir}/RainSheetCluster.png",
                 $"{EnvMatDir}/RainStreakNear_Mat.mat",
                 $"{EnvMatDir}/RainSheetFar_Mat.mat",
+                $"{EnvMatDir}/RainNearGPU_Mat.mat",
+                $"{EnvMatDir}/RainMidGPU_Mat.mat",
+                $"{MeshDir}/NearRainDropsMesh.asset",
+                $"{MeshDir}/MidRainDropsMesh.asset",
             };
 
             foreach (string path in obsoleteAssets)
@@ -381,18 +362,18 @@ namespace VRAtis.Editor
             main.loop = true;
             main.playOnAwake = false;
             main.simulationSpace = ParticleSystemSimulationSpace.World;
-            main.startLifetime = new ParticleSystem.MinMaxCurve(0.20f, 0.32f);
+            main.startLifetime = new ParticleSystem.MinMaxCurve(0.16f, 0.24f);
             main.startSpeed = 0f;
-            main.startSize = new ParticleSystem.MinMaxCurve(0.16f, 0.28f);
-            main.startColor = new Color(0.84f, 0.90f, 0.96f, 0.62f);
-            main.maxParticles = 320;
+            main.startSize = new ParticleSystem.MinMaxCurve(0.14f, 0.24f);
+            main.startColor = new Color(0.84f, 0.90f, 0.96f, 0.56f);
+            main.maxParticles = 64;
 
             var emission = ps.emission;
             emission.rateOverTime = 0f;
 
             var shape = ps.shape;
             shape.shapeType = ParticleSystemShapeType.Box;
-            shape.scale = new Vector3(16f, 0.04f, 16f);
+            shape.scale = new Vector3(8f, 0.04f, 8f);
 
             var sizeLife = ps.sizeOverLifetime;
             sizeLife.enabled = true;
@@ -530,8 +511,7 @@ namespace VRAtis.Editor
         private static void WireControllerReferences(
             RainWeatherController controller,
             EnvironmentManager envMgr,
-            MeshRenderer nearRenderer,
-            MeshRenderer midRenderer,
+            MeshRenderer rainVolumeRenderer,
             ParticleSystem splashPs,
             AudioClip rainClip,
             AudioSource rainAudioSource,
@@ -541,8 +521,7 @@ namespace VRAtis.Editor
             so.FindProperty("environmentManager").objectReferenceValue = envMgr;
             so.FindProperty("timeOfDayController").objectReferenceValue = Object.FindAnyObjectByType<DynamicTimeOfDay>();
             so.FindProperty("cameraTransform").objectReferenceValue = Camera.main != null ? Camera.main.transform : null;
-            so.FindProperty("nearRainRenderer").objectReferenceValue = nearRenderer;
-            so.FindProperty("midRainRenderer").objectReferenceValue = midRenderer;
+            so.FindProperty("rainVolumeRenderer").objectReferenceValue = rainVolumeRenderer;
             so.FindProperty("groundSplashParticles").objectReferenceValue = splashPs;
             so.FindProperty("rainAudioClip").objectReferenceValue = rainClip;
             so.FindProperty("rainAudioSource").objectReferenceValue = rainAudioSource;

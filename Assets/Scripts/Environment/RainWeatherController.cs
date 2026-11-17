@@ -4,26 +4,25 @@ using VRAtis.Ballistics;
 namespace VRAtis.Environment
 {
     /// <summary>
-    /// Orchestrates GPU-instanced/procedural single-drop rain aligned with EnvironmentManager.windSpeedMS:
-    /// 1) GPU near randomized raindrops around shooter/camera
-    /// 2) GPU mid-valley randomized downpour volume
-    /// 3) Ground water splash ripples around player
-    /// 4) Overcast storm lighting & skybox darkening (no fog)
+    /// Orchestrates ultra-lightweight single-volume GPU rain focused along the viewer's 3D gaze (~0-6.8m):
+    /// 1) Single-draw-call world-wrapped GPU raindrops centered ahead of & including the head camera
+    /// 2) Lightweight foreground ground water splashes
+    /// 3) Stereo-reactive ambient rain audio + wind-aligned slant (no fog)
     /// </summary>
     public class RainWeatherController : MonoBehaviour
     {
         private static readonly int RainIntensityPropId = Shader.PropertyToID("_RainIntensity");
         private static readonly int RainWindXZPropId = Shader.PropertyToID("_RainWindXZ");
         private static readonly int RainAnchorPosPropId = Shader.PropertyToID("_RainAnchorPos");
+        private static readonly int RainCamForwardPropId = Shader.PropertyToID("_RainCamForward");
 
         [Header("Referanslar")]
         [SerializeField] private EnvironmentManager environmentManager;
         [SerializeField] private DynamicTimeOfDay timeOfDayController;
         [SerializeField] private Transform cameraTransform;
 
-        [Header("GPU Yağmur Katmanları ve Zemin Sıçramaları")]
-        [SerializeField] private MeshRenderer nearRainRenderer;
-        [SerializeField] private MeshRenderer midRainRenderer;
+        [Header("GPU Yağmur Hacmi ve Hafif Zemin Sıçramaları")]
+        [SerializeField] private MeshRenderer rainVolumeRenderer;
         [SerializeField] private ParticleSystem groundSplashParticles;
 
         [Header("Yağmur Sesi (Doğal Stereo + Rüzgar Etkileşimi)")]
@@ -38,24 +37,21 @@ namespace VRAtis.Environment
 
         [Header("Yoğunluk ve Geçiş Ayarları")]
         [SerializeField] private float transitionDurationSec = 1.6f;
-        [SerializeField] private float splashMaxEmissionRate = 260f;
+        [SerializeField] private float splashMaxEmissionRate = 75f;
 
-        [Header("Rüzgar ve Yerleşim")]
+        [Header("Rüzgar ve Bakış Alanı Yerleşimi")]
         [Tooltip("Yağmurun yatay rüzgar vektöründen ne kadar yatık sürükleneceğini belirler.")]
         [Range(0.5f, 3.0f)]
         [SerializeField] private float windDriftMultiplier = 1.45f;
-        [SerializeField] private float nearAnchorForwardMeters = 4.5f;
-        [SerializeField] private float nearAnchorHeightOffset = 4.5f;
-        [SerializeField] private float midAnchorForwardMeters = 22.0f;
-        [SerializeField] private float midAnchorHeightOffset = 7.5f;
+        [SerializeField] private float anchorForwardMeters = 2.6f;
+        [SerializeField] private float minAnchorHeightMeters = 3.2f;
 
         private float _rainIntensity01;
         private float _lastAppliedIntensity = -1f;
         private float _clearHumidityPercent = 45f;
         private bool _humidityCaptured;
 
-        private MaterialPropertyBlock _nearPropBlock;
-        private MaterialPropertyBlock _midPropBlock;
+        private MaterialPropertyBlock _rainPropBlock;
         private float _rainAudioSeed;
         private float _smoothedAudioPan;
         private bool _audioPlaybackStarted;
@@ -75,8 +71,7 @@ namespace VRAtis.Environment
             if (cameraTransform == null && Camera.main != null)
                 cameraTransform = Camera.main.transform;
 
-            _nearPropBlock = new MaterialPropertyBlock();
-            _midPropBlock = new MaterialPropertyBlock();
+            _rainPropBlock = new MaterialPropertyBlock();
             _rainAudioSeed = Random.Range(13f, 173f);
 
             ConfigureRainAudioSource();
@@ -85,8 +80,7 @@ namespace VRAtis.Environment
 
         private void OnDisable()
         {
-            SetRendererActiveAndZero(nearRainRenderer, ref _nearPropBlock);
-            SetRendererActiveAndZero(midRainRenderer, ref _midPropBlock);
+            SetRendererActiveAndZero(rainVolumeRenderer, ref _rainPropBlock);
 
             if (timeOfDayController != null)
                 timeOfDayController.SetRainWeatherFactor(0f);
@@ -144,10 +138,8 @@ namespace VRAtis.Environment
             }
 
             bool active = intensity01 > 0.002f;
-            if (nearRainRenderer != null)
-                nearRainRenderer.enabled = active;
-            if (midRainRenderer != null)
-                midRainRenderer.enabled = active;
+            if (rainVolumeRenderer != null)
+                rainVolumeRenderer.enabled = active;
 
             SetSplashRate(groundSplashParticles, splashMaxEmissionRate * intensity01);
 
@@ -161,23 +153,21 @@ namespace VRAtis.Environment
             Vector4 windXZ = new Vector4(wind.x * windDriftMultiplier, wind.z * windDriftMultiplier, 0f, 0f);
 
             Vector3 camPos = cameraTransform != null ? cameraTransform.position : new Vector3(1.8f, 1.5f, -4.3f);
-            Vector3 camFlatFwd = cameraTransform != null
-                ? new Vector3(cameraTransform.forward.x, 0f, cameraTransform.forward.z)
+            Vector3 camFwd = cameraTransform != null && cameraTransform.forward.sqrMagnitude > 0.001f
+                ? cameraTransform.forward.normalized
                 : Vector3.forward;
 
-            camFlatFwd = camFlatFwd.sqrMagnitude > 0.001f ? camFlatFwd.normalized : Vector3.forward;
+            // Keep rain box centered ahead of 3D camera gaze while enveloping camera head (works looking straight up too)
+            Vector3 anchorPos = camPos + camFwd * anchorForwardMeters;
+            anchorPos.y = Mathf.Max(minAnchorHeightMeters, anchorPos.y);
 
-            Vector3 nearAnchor = camPos + camFlatFwd * nearAnchorForwardMeters;
-            nearAnchor.y = Mathf.Max(4.0f, camPos.y + nearAnchorHeightOffset);
-            UpdateGpuRainLayer(nearRainRenderer, ref _nearPropBlock, nearAnchor, windXZ, _rainIntensity01);
-
-            Vector3 midAnchor = camPos + camFlatFwd * midAnchorForwardMeters;
-            midAnchor.y = Mathf.Max(6.5f, camPos.y + midAnchorHeightOffset);
-            UpdateGpuRainLayer(midRainRenderer, ref _midPropBlock, midAnchor, windXZ, _rainIntensity01);
+            UpdateGpuRainLayer(rainVolumeRenderer, ref _rainPropBlock, anchorPos, camFwd, windXZ, _rainIntensity01);
 
             if (groundSplashParticles != null)
             {
-                Vector3 splashCenter = camPos + camFlatFwd * 5.0f;
+                Vector3 camFlatFwd = new Vector3(camFwd.x, 0f, camFwd.z);
+                camFlatFwd = camFlatFwd.sqrMagnitude > 0.001f ? camFlatFwd.normalized : Vector3.forward;
+                Vector3 splashCenter = camPos + camFlatFwd * 3.8f;
                 groundSplashParticles.transform.position = new Vector3(splashCenter.x, 0.03f, splashCenter.z);
             }
 
@@ -188,6 +178,7 @@ namespace VRAtis.Environment
             MeshRenderer renderer,
             ref MaterialPropertyBlock propBlock,
             Vector3 anchorPos,
+            Vector3 camForward,
             Vector4 windXZ,
             float intensity01)
         {
@@ -204,6 +195,7 @@ namespace VRAtis.Environment
             propBlock.SetFloat(RainIntensityPropId, intensity01);
             propBlock.SetVector(RainWindXZPropId, windXZ);
             propBlock.SetVector(RainAnchorPosPropId, new Vector4(anchorPos.x, anchorPos.y, anchorPos.z, 0f));
+            propBlock.SetVector(RainCamForwardPropId, new Vector4(camForward.x, camForward.y, camForward.z, 0f));
             renderer.SetPropertyBlock(propBlock);
         }
 
@@ -324,8 +316,7 @@ namespace VRAtis.Environment
 
         private void StopAllEmittersImmediate()
         {
-            SetRendererActiveAndZero(nearRainRenderer, ref _nearPropBlock);
-            SetRendererActiveAndZero(midRainRenderer, ref _midPropBlock);
+            SetRendererActiveAndZero(rainVolumeRenderer, ref _rainPropBlock);
             PauseRainAudioImmediate();
 
             if (groundSplashParticles == null)
