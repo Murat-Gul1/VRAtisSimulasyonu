@@ -150,10 +150,7 @@ namespace VRAtis.Hardware
             _originalMainTag = gameObject.tag;
 
             if (_mainCam != null)
-            {
                 _mainCam.useOcclusionCulling = false;
-                _mainCam.layerCullSpherical = true;
-            }
 
             if (PlayerPrefs.HasKey(PrefsLensSpacingKey))
                 lensCenterSpacingMm = Mathf.Clamp(PlayerPrefs.GetFloat(PrefsLensSpacingKey, lensCenterSpacingMm), 52f, 74f);
@@ -262,10 +259,7 @@ namespace VRAtis.Hardware
                 _mainUrpData = GetComponent<UniversalAdditionalCameraData>();
 
             if (_mainCam != null)
-            {
                 _mainCam.useOcclusionCulling = false;
-                _mainCam.layerCullSpherical = true;
-            }
 
             _appliedStateInitialized = true;
             _lastAppliedSplitState = enableSplitScreen;
@@ -389,7 +383,6 @@ namespace VRAtis.Hardware
             if (_mainCam != null)
             {
                 _mainCam.useOcclusionCulling = false;
-                _mainCam.layerCullSpherical = true;
                 _mainCam.rect = new Rect(0f, 0f, 1f, 1f);
                 _mainCam.fieldOfView = Mathf.Clamp(singleScreenFov + _dynamicFovDeltaDeg, 35f, 95f);
                 _mainCam.enabled = true;
@@ -464,7 +457,6 @@ namespace VRAtis.Hardware
             eyeCam.allowHDR = _mainCam.allowHDR;
             eyeCam.allowMSAA = _mainCam.allowMSAA;
             eyeCam.useOcclusionCulling = false;
-            eyeCam.layerCullSpherical = true;
             eyeCam.rect = viewportRect;
 
             UniversalAdditionalCameraData eyeUrp = eyeCam.GetComponent<UniversalAdditionalCameraData>();

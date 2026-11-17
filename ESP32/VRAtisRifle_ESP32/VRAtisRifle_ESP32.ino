@@ -3,12 +3,18 @@
 #include <Wire.h>
 #include <esp_wifi.h>
 #include <math.h>
+#include <string.h>
 
-// --- AĞ AYARLARI ---
-const char* WIFI_SSID     = "YOUR_HOME_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* PC_IP         = "192.168.1.105"; // Bilgisayarının yerel IP adresi (İleride telefon Hotspot için güncellenecek)
-const uint16_t UDP_PORT   = 4210;
+// --- AĞ AYARLARI (Önce Telefon Hotspot'u arar; bulamazsa Ev Wi-Fi + PC IP'ye bağlanır) ---
+const char* HOTSPOT_SSID     = "TELEFON_HOTSPOT_ADI";     // Galaxy A26 Hotspot adın
+const char* HOTSPOT_PASSWORD = "TELEFON_SIFRESI";         // Galaxy A26 Hotspot şifren
+
+const char* HOME_WIFI_SSID   = "YOUR_HOME_WIFI_SSID";                     // PC testi için ev modemi
+const char* HOME_WIFI_PASS   = "YOUR_WIFI_PASSWORD";
+const IPAddress HOME_PC_IP(192, 168, 1, 105);             // PC yerel IP adresi
+
+const uint16_t UDP_PORT      = 4210;
+IPAddress targetIp           = HOME_PC_IP;
 
 // --- PİN VE DONANIM TANIMLAMALARI ---
 #define I2C_SDA_PIN  8
@@ -220,9 +226,56 @@ void sendUDPPacket(bool forceTriggerHigh) {
   packet.triggerState = forceTriggerHigh ? 1 : ((digitalRead(TRIGGER_PIN) == LOW) ? 1 : 0);
   packet.shotCount    = interruptCounter;
 
-  udp.beginPacket(PC_IP, UDP_PORT);
+  udp.beginPacket(targetIp, UDP_PORT);
   udp.write((const uint8_t*)&packet, sizeof(packet));
   udp.endPacket();
+}
+
+void connectBestWifi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true);
+  delay(80);
+  WiFi.setAutoReconnect(true);
+
+  bool hotspotConfigured = (strcmp(HOTSPOT_SSID, "TELEFON_HOTSPOT_ADI") != 0) && (strlen(HOTSPOT_SSID) > 0);
+  bool hotspotFound = false;
+  bool homeFound = false;
+
+  Serial.println("Wi-Fi aglari taraniyor...");
+  int netCount = WiFi.scanNetworks();
+  for (int i = 0; i < netCount; i++) {
+    String ssid = WiFi.SSID(i);
+    if (hotspotConfigured && ssid == HOTSPOT_SSID)
+      hotspotFound = true;
+    if (ssid == HOME_WIFI_SSID)
+      homeFound = true;
+  }
+  WiFi.scanDelete();
+
+  bool useHotspot = hotspotFound || (hotspotConfigured && !homeFound);
+  const char* chosenSsid = useHotspot ? HOTSPOT_SSID : HOME_WIFI_SSID;
+  const char* chosenPass = useHotspot ? HOTSPOT_PASSWORD : HOME_WIFI_PASS;
+
+  Serial.printf("Baglaniliyor -> %s (%s)\n", chosenSsid, useHotspot ? "Telefon Hotspot" : "Ev Wi-Fi / PC");
+  WiFi.begin(chosenSsid, chosenPass);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(200);
+    Serial.print(".");
+  }
+
+  WiFi.setSleep(false);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  if (useHotspot) {
+    IPAddress gw = WiFi.gatewayIP();
+    targetIp = (gw != IPAddress(0, 0, 0, 0)) ? gw : WiFi.broadcastIP();
+  } else {
+    targetIp = HOME_PC_IP;
+  }
+
+  Serial.println("\n[OK] Wi-Fi baglandi! ESP32 IP: " + WiFi.localIP().toString()
+                 + " -> Hedef UDP IP: " + targetIp.toString() + ":" + String(UDP_PORT));
 }
 
 void handleSerialCommands() {
@@ -242,19 +295,7 @@ void setup() {
 
   initSensors();
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Wi-Fi baglaniyor");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(200);
-    Serial.print(".");
-  }
-
-  WiFi.setSleep(false);
-  esp_wifi_set_ps(WIFI_PS_NONE);
-
-  Serial.println("\n[OK] Wi-Fi baglandi! IP: " + WiFi.localIP().toString());
+  connectBestWifi();
   Serial.println("[KOMUT] 'g': Jiroskop Sifirlama");
 
   triggerArmed = (digitalRead(TRIGGER_PIN) == HIGH);

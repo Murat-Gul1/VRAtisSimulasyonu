@@ -42,12 +42,30 @@ namespace VRAtis.UI
             public Button LensResetButton;
             public Text LensValueText;
             public Text ScreenWidthText;
+            public GameObject OpticalCategoryPage;
+            public Button OpenOpticalButton;
+            public Button OpticalBackButton;
+            public RawImage OpticPreviewImage;
+            public Text OpticStatusText;
+            public Button OpticZeroButton;
+            public Toggle OpticEnableCheckbox;
+            public Button OpticModeButton;
+            public Text OpticModeLabel;
+            public Button OpticAxisButton;
+            public Text OpticAxisLabel;
+            public Button OpticSpacingMinusButton;
+            public Text OpticSpacingValueText;
+            public Button OpticSpacingPlusButton;
+            public Button OpticDomMinusButton;
+            public Text OpticDomValueText;
+            public Button OpticDomPlusButton;
         }
 
         [Header("Referanslar")]
         [SerializeField] private DynamicTimeOfDay timeOfDayController;
         [SerializeField] private EnvironmentManager environmentManager;
         [SerializeField] private CardboardStereoRig stereoRig;
+        [SerializeField] private OpticalRifleTracker opticalTracker;
 
         [Header("Ana UI Kökü")]
         [SerializeField] private RectTransform primaryEyeRoot;
@@ -63,6 +81,7 @@ namespace VRAtis.UI
         private bool _stereoLayoutInitialized;
         private float _lastDisplayedLensMm = -1f;
         private float _lastDisplayedPhoneMm = -1f;
+        private float _nextOpticalUiRefreshTime;
 
         public event Action<bool, bool> OnWeatherTogglesChanged;
 
@@ -80,6 +99,8 @@ namespace VRAtis.UI
                     : FindAnyObjectByType<EnvironmentManager>();
             if (stereoRig == null)
                 stereoRig = FindAnyObjectByType<CardboardStereoRig>();
+            if (opticalTracker == null)
+                opticalTracker = FindAnyObjectByType<OpticalRifleTracker>();
 
             if (primaryEyeRoot == null)
                 primaryEyeRoot = transform.Find("PrimaryEye_UIRoot") as RectTransform;
@@ -112,6 +133,7 @@ namespace VRAtis.UI
             SyncWeatherTogglesToViews();
             SyncTimeWidgetsFromScene();
             SyncVrWidgetsToViews();
+            SyncOpticalWidgetsToViews();
             ApplyStereoLayoutIfNeeded(force: true);
         }
 
@@ -129,6 +151,13 @@ namespace VRAtis.UI
 
                 if (_primaryView?.MainCategoryPage != null && _primaryView.MainCategoryPage.activeSelf)
                     SyncVrWidgetsToViews();
+
+                if (_primaryView?.OpticalCategoryPage != null && _primaryView.OpticalCategoryPage.activeSelf
+                    && Time.unscaledTime >= _nextOpticalUiRefreshTime)
+                {
+                    _nextOpticalUiRefreshTime = Time.unscaledTime + 0.10f;
+                    SyncOpticalWidgetsToViews();
+                }
             }
         }
 
@@ -156,28 +185,37 @@ namespace VRAtis.UI
 
         public void ShowMainCategoryPage()
         {
-            for (int i = 0; i < _views.Count; i++)
-            {
-                if (_views[i].MainCategoryPage != null)
-                    _views[i].MainCategoryPage.SetActive(true);
-                if (_views[i].WeatherCategoryPage != null)
-                    _views[i].WeatherCategoryPage.SetActive(false);
-            }
+            SetCategoryPageActive(showMain: true, showWeather: false, showOptical: false);
             SyncVrWidgetsToViews();
         }
 
         public void ShowWeatherCategoryPage()
         {
+            SetCategoryPageActive(showMain: false, showWeather: true, showOptical: false);
+            SyncWeatherTogglesToViews();
+            SyncTimeWidgetsFromScene();
+        }
+
+        public void ShowOpticalCategoryPage()
+        {
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: true);
+            _nextOpticalUiRefreshTime = 0f;
+            SyncOpticalWidgetsToViews();
+        }
+
+        private void SetCategoryPageActive(bool showMain, bool showWeather, bool showOptical)
+        {
             for (int i = 0; i < _views.Count; i++)
             {
                 if (_views[i].MainCategoryPage != null)
-                    _views[i].MainCategoryPage.SetActive(false);
+                    _views[i].MainCategoryPage.SetActive(showMain);
                 if (_views[i].WeatherCategoryPage != null)
-                    _views[i].WeatherCategoryPage.SetActive(true);
+                    _views[i].WeatherCategoryPage.SetActive(showWeather);
+                if (_views[i].OpticalCategoryPage != null)
+                    _views[i].OpticalCategoryPage.SetActive(showOptical);
             }
 
-            SyncWeatherTogglesToViews();
-            SyncTimeWidgetsFromScene();
+            RefreshOpticalPreviewActiveState();
         }
 
         private void SetWindowOpen(bool open)
@@ -187,6 +225,8 @@ namespace VRAtis.UI
                 if (_views[i].WindowRoot != null)
                     _views[i].WindowRoot.SetActive(open);
             }
+
+            RefreshOpticalPreviewActiveState();
         }
 
         private UiView ResolveAndBindView(RectTransform root)
@@ -196,6 +236,7 @@ namespace VRAtis.UI
             Transform contentTr = winTr != null ? winTr.Find("ContentArea") : null;
             Transform mainTr = contentTr != null ? contentTr.Find("MainCategoryPage") : null;
             Transform weatherTr = contentTr != null ? contentTr.Find("WeatherCategoryPage") : null;
+            Transform opticalTr = contentTr != null ? contentTr.Find("OpticalCategoryPage") : null;
             Transform vrCardTr = mainTr != null ? mainTr.Find("VRCalibrationCard") : null;
 
             UiView view = new UiView
@@ -208,8 +249,11 @@ namespace VRAtis.UI
                 WindowRect = winTr as RectTransform,
                 MainCategoryPage = mainTr != null ? mainTr.gameObject : null,
                 WeatherCategoryPage = weatherTr != null ? weatherTr.gameObject : null,
+                OpticalCategoryPage = opticalTr != null ? opticalTr.gameObject : null,
                 OpenWeatherButton = FindChildComponent<Button>(mainTr, "WeatherMenuButton"),
+                OpenOpticalButton = FindChildComponent<Button>(mainTr, "OpticalMenuButton"),
                 WeatherBackButton = FindChildComponent<Button>(weatherTr, "WeatherSubHeader/BackButton"),
+                OpticalBackButton = FindChildComponent<Button>(opticalTr, "OpticSubHeader/BackButton"),
                 CloseWindowButton = FindChildComponent<Button>(winTr, "HeaderBar/CloseButton"),
                 RainCheckbox = FindChildComponent<Toggle>(weatherTr, "RainCheckbox"),
                 FogCheckbox = FindChildComponent<Toggle>(weatherTr, "FogCheckbox"),
@@ -220,6 +264,20 @@ namespace VRAtis.UI
                 LensResetButton = FindChildComponent<Button>(vrCardTr, "LensControlRow/LensResetButton"),
                 LensValueText = FindChildComponent<Text>(vrCardTr, "LensControlRow/LensValueText"),
                 ScreenWidthText = FindChildComponent<Text>(vrCardTr, "VrHeaderRow/VrScreenWidthText"),
+                OpticPreviewImage = FindChildComponent<RawImage>(opticalTr, "OpticPreviewRow/PreviewFrame/OpticPreviewImage"),
+                OpticStatusText = FindChildComponent<Text>(opticalTr, "OpticPreviewRow/StatusColumn/StatusBox/OpticStatusText"),
+                OpticZeroButton = FindChildComponent<Button>(opticalTr, "OpticPreviewRow/StatusColumn/OpticZeroButton"),
+                OpticEnableCheckbox = FindChildComponent<Toggle>(opticalTr, "OpticEnableCheckbox"),
+                OpticModeButton = FindChildComponent<Button>(opticalTr, "OpticModeButton"),
+                OpticModeLabel = FindChildComponent<Text>(opticalTr, "OpticModeButton/Label"),
+                OpticAxisButton = FindChildComponent<Button>(opticalTr, "OpticAxisButton"),
+                OpticAxisLabel = FindChildComponent<Text>(opticalTr, "OpticAxisButton/Label"),
+                OpticSpacingMinusButton = FindChildComponent<Button>(opticalTr, "OpticSpacingRow/SpacingMinusButton"),
+                OpticSpacingValueText = FindChildComponent<Text>(opticalTr, "OpticSpacingRow/ValueBox/SpacingValueText"),
+                OpticSpacingPlusButton = FindChildComponent<Button>(opticalTr, "OpticSpacingRow/SpacingPlusButton"),
+                OpticDomMinusButton = FindChildComponent<Button>(opticalTr, "OpticDomRow/DomMinusButton"),
+                OpticDomValueText = FindChildComponent<Text>(opticalTr, "OpticDomRow/ValueBox/DomValueText"),
+                OpticDomPlusButton = FindChildComponent<Button>(opticalTr, "OpticDomRow/DomPlusButton"),
                 TimePresetToggles = new Toggle[timePresetHours != null ? timePresetHours.Length : 0]
             };
 
@@ -234,8 +292,18 @@ namespace VRAtis.UI
         {
             BindClick(view.GearButton, ToggleWindow);
             BindClick(view.OpenWeatherButton, ShowWeatherCategoryPage);
+            BindClick(view.OpenOpticalButton, ShowOpticalCategoryPage);
             BindClick(view.WeatherBackButton, ShowMainCategoryPage);
+            BindClick(view.OpticalBackButton, ShowMainCategoryPage);
             BindClick(view.CloseWindowButton, CloseWindow);
+            BindClick(view.OpticZeroButton, HandleOpticZero);
+            BindClick(view.OpticModeButton, CycleOpticMode);
+            BindClick(view.OpticAxisButton, CycleOpticAxis);
+            BindClick(view.OpticSpacingMinusButton, () => NudgeOpticSpacing(-0.01f));
+            BindClick(view.OpticSpacingPlusButton, () => NudgeOpticSpacing(+0.01f));
+            BindClick(view.OpticDomMinusButton, () => NudgeOpticDom(-5));
+            BindClick(view.OpticDomPlusButton, () => NudgeOpticDom(+5));
+            BindToggle(view.OpticEnableCheckbox, HandleOpticEnableChanged);
 
             if (view.RainCheckbox != null)
             {
@@ -521,6 +589,180 @@ namespace VRAtis.UI
             }
         }
 
+        private OpticalRifleTracker ResolveOpticalTracker()
+        {
+            if (opticalTracker == null)
+                opticalTracker = FindAnyObjectByType<OpticalRifleTracker>();
+            return opticalTracker;
+        }
+
+        private void RefreshOpticalPreviewActiveState()
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            if (tracker == null)
+                return;
+
+            bool shouldShowPreview = IsMenuOpen
+                && _primaryView != null
+                && _primaryView.OpticalCategoryPage != null
+                && _primaryView.OpticalCategoryPage.activeSelf;
+
+            tracker.SetPreviewActive(shouldShowPreview);
+        }
+
+        private void HandleOpticEnableChanged(bool isOn)
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            if (tracker != null)
+                tracker.IsOpticalTrackingEnabled = isOn;
+
+            RefreshOpticalPreviewActiveState();
+            SyncOpticalWidgetsToViews();
+        }
+
+        private void CycleOpticMode()
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            if (tracker == null)
+                return;
+
+            int next = ((int)tracker.CurrentTargetMode + 1) % 4;
+            tracker.CurrentTargetMode = (OpticalRifleTracker.LedTargetMode)next;
+            SyncOpticalWidgetsToViews();
+        }
+
+        private void CycleOpticAxis()
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            if (tracker == null)
+                return;
+
+            int next = ((int)tracker.CurrentBaselineAxis + 1) % 3;
+            tracker.CurrentBaselineAxis = (OpticalRifleTracker.BaselineAxis)next;
+            SyncOpticalWidgetsToViews();
+        }
+
+        private void NudgeOpticSpacing(float deltaMeters)
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            if (tracker == null)
+                return;
+
+            tracker.LedSpacingMeters += deltaMeters;
+            SyncOpticalWidgetsToViews();
+        }
+
+        private void NudgeOpticDom(int delta)
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            if (tracker == null)
+                return;
+
+            tracker.MinColorDominance += delta;
+            SyncOpticalWidgetsToViews();
+        }
+
+        private void HandleOpticZero()
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            if (tracker == null)
+                return;
+
+            tracker.RecenterOpticalZero();
+            SyncOpticalWidgetsToViews();
+        }
+
+        private void SyncOpticalWidgetsToViews()
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            bool enabled = tracker != null && tracker.IsOpticalTrackingEnabled;
+            OpticalRifleTracker.LedTargetMode mode = tracker != null
+                ? tracker.CurrentTargetMode
+                : OpticalRifleTracker.LedTargetMode.GreenAndRed;
+            OpticalRifleTracker.BaselineAxis axis = tracker != null
+                ? tracker.CurrentBaselineAxis
+                : OpticalRifleTracker.BaselineAxis.HorizontalCrossbar;
+            float spacingCm = tracker != null ? tracker.LedSpacingMeters * 100f : 6f;
+            int dom = tracker != null ? tracker.MinColorDominance : 105;
+            Texture previewTex = tracker != null ? tracker.DebugPreviewTexture : null;
+            string statusText = BuildOpticalStatusText(tracker);
+
+            for (int v = 0; v < _views.Count; v++)
+            {
+                UiView view = _views[v];
+                if (view.OpticEnableCheckbox != null)
+                    view.OpticEnableCheckbox.SetIsOnWithoutNotify(enabled);
+                if (view.OpticModeLabel != null)
+                    view.OpticModeLabel.text = FormatLedMode(mode);
+                if (view.OpticAxisLabel != null)
+                    view.OpticAxisLabel.text = FormatBaselineAxis(axis);
+                if (view.OpticSpacingValueText != null)
+                    view.OpticSpacingValueText.text = $"{spacingCm:F0} cm";
+                if (view.OpticDomValueText != null)
+                    view.OpticDomValueText.text = dom.ToString();
+                if (view.OpticStatusText != null)
+                    view.OpticStatusText.text = statusText;
+                if (view.OpticZeroButton != null)
+                    view.OpticZeroButton.interactable = tracker != null;
+                if (view.OpticPreviewImage != null)
+                {
+                    if (view.OpticPreviewImage.texture != previewTex)
+                        view.OpticPreviewImage.texture = previewTex;
+                    view.OpticPreviewImage.enabled = previewTex != null;
+                }
+            }
+        }
+
+        private static string FormatLedMode(OpticalRifleTracker.LedTargetMode mode)
+        {
+            switch (mode)
+            {
+                case OpticalRifleTracker.LedTargetMode.GreenAndRed:
+                    return "LED Modu: Yeşil + Kırmızı (Önerilen)";
+                case OpticalRifleTracker.LedTargetMode.GreenAndBlue:
+                    return "LED Modu: Yeşil + Mavi";
+                case OpticalRifleTracker.LedTargetMode.DualGreen:
+                    return "LED Modu: Çift Yeşil";
+                case OpticalRifleTracker.LedTargetMode.DualRed:
+                    return "LED Modu: Çift Kırmızı";
+                default:
+                    return "LED Modu: Yeşil + Kırmızı";
+            }
+        }
+
+        private static string FormatBaselineAxis(OpticalRifleTracker.BaselineAxis axis)
+        {
+            switch (axis)
+            {
+                case OpticalRifleTracker.BaselineAxis.HorizontalCrossbar:
+                    return "Dizilim: Yatay (Sağ-Sol)";
+                case OpticalRifleTracker.BaselineAxis.VerticalStack:
+                    return "Dizilim: Dikey (Üst-Alt)";
+                case OpticalRifleTracker.BaselineAxis.LongitudinalRail:
+                    return "Dizilim: Namlu Boyu (Ön-Arka)";
+                default:
+                    return "Dizilim: Yatay";
+            }
+        }
+
+        private static string BuildOpticalStatusText(OpticalRifleTracker tracker)
+        {
+            if (tracker == null)
+                return "Durum: Optik takip bileşeni yok";
+            if (!tracker.IsOpticalTrackingEnabled)
+                return "Durum: Kapalı (Yukarıdan açın)";
+            if (tracker.IsWaitingCameraPermission)
+                return "Durum: Kamera izni bekleniyor...";
+            if (!tracker.IsCameraRunning)
+                return "Durum: Kamera kapalı / Başlatılıyor";
+            if (tracker.IsActivelyTrackingPosition)
+                return $"Durum: KİLİTLENDİ (A:✓ B:✓)\nMesafe: {tracker.CurrentOpticalDistanceMeters * 100f:F0} cm ({tracker.LastPixelSeparation:F0}px)\nKam: {tracker.ProcessedWidth}x{tracker.ProcessedHeight} {tracker.CameraUpdateHz:F0}Hz Açı:{tracker.CameraRotationAngle}°";
+
+            string markA = tracker.IsLedAFound ? "✓" : "✗";
+            string markB = tracker.IsLedBFound ? "✓" : "✗";
+            return $"Durum: LED Aranıyor (A:{markA} B:{markB})\nKam: {tracker.ProcessedWidth}x{tracker.ProcessedHeight} {tracker.CameraUpdateHz:F0}Hz Açı:{tracker.CameraRotationAngle}°";
+        }
+
         private static T FindChildComponent<T>(Transform root, string path) where T : Component
         {
             if (root == null)
@@ -536,6 +778,15 @@ namespace VRAtis.UI
 
             btn.onClick.RemoveAllListeners();
             btn.onClick.AddListener(() => callback());
+        }
+
+        private static void BindToggle(Toggle toggle, Action<bool> callback)
+        {
+            if (toggle == null || callback == null)
+                return;
+
+            toggle.onValueChanged.RemoveAllListeners();
+            toggle.onValueChanged.AddListener(isOn => callback(isOn));
         }
     }
 }

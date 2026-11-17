@@ -20,10 +20,10 @@ namespace VRAtis.EditorTools
             PlayerSettings.companyName = "VRAtis";
             PlayerSettings.productName = "VRAtisSimulasyonu";
             PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.Android, "com.vratis.simulasyon");
-            PlayerSettings.defaultInterfaceOrientation = UIOrientation.LandscapeLeft;
+            PlayerSettings.defaultInterfaceOrientation = UIOrientation.AutoRotation;
             PlayerSettings.allowedAutorotateToPortrait = false;
             PlayerSettings.allowedAutorotateToPortraitUpsideDown = false;
-            PlayerSettings.allowedAutorotateToLandscapeRight = false;
+            PlayerSettings.allowedAutorotateToLandscapeRight = true;
             PlayerSettings.allowedAutorotateToLandscapeLeft = true;
 
             PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel26;
@@ -32,7 +32,7 @@ namespace VRAtis.EditorTools
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
 
             AssetDatabase.SaveAssets();
-            Debug.Log("[AndroidBuildTool] Android VR ayarları uygulandı (LandscapeLeft, Internet İzni, IL2CPP, ARM64).");
+            Debug.Log("[AndroidBuildTool] Android VR ayarları uygulandı (LandscapeLeft + LandscapeRight Çift Yön, Internet İzni, IL2CPP, ARM64).");
         }
 
         [MenuItem("VRAtis/Android/2. Android APK Derle")]

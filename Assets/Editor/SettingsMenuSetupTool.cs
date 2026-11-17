@@ -19,7 +19,7 @@ namespace VRAtis.EditorTools
     {
         private const string UiTexDir = "Assets/UI/Textures";
         private const string CanvasName = "SettingsUI_Canvas";
-        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V3_Done";
+        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V4_Done";
 
         private static readonly Color PanelBgColor = new Color(0.06f, 0.09f, 0.13f, 0.90f);
         private static readonly Color HeaderBgColor = new Color(0.09f, 0.14f, 0.20f, 0.96f);
@@ -172,37 +172,20 @@ namespace VRAtis.EditorTools
                 "Hava Durumu",
                 "Yağmur, sis ve günün saati ayarları");
 
+            CreateCategoryButton(
+                "OpticalMenuButton",
+                mainPage.transform,
+                roundedSprite,
+                gearSprite,
+                font,
+                "Optik Takip (Kamera & LED)",
+                "2 LED ile tüfek 3B konum takibi & kalibrasyon");
+
             CreateVrCalibrationCard(mainPage.transform, roundedSprite, checkRingSprite, checkMarkSprite, font);
 
             // Page 2: Weather Selection Sub-Panel
-            GameObject weatherPage = new GameObject("WeatherCategoryPage");
-            weatherPage.transform.SetParent(contentGo.transform, false);
-            StretchFull(weatherPage.AddComponent<RectTransform>());
-            VerticalLayoutGroup weatherLayout = weatherPage.AddComponent<VerticalLayoutGroup>();
-            weatherLayout.spacing = 5f;
-            weatherLayout.childAlignment = TextAnchor.UpperCenter;
-            weatherLayout.childControlWidth = true;
-            weatherLayout.childControlHeight = true;
-            weatherLayout.childForceExpandWidth = true;
-            weatherLayout.childForceExpandHeight = false;
-
-            // Back + Subheader row
-            GameObject subHeader = CreateRowContainer("WeatherSubHeader", weatherPage.transform, 38f);
-            Button backBtn = CreateRoundedButton("BackButton", subHeader.transform, roundedSprite, CardBgColor, new Vector2(86f, 34f));
-            RectTransform backRt = backBtn.GetComponent<RectTransform>();
-            backRt.anchorMin = new Vector2(0f, 0.5f);
-            backRt.anchorMax = new Vector2(0f, 0.5f);
-            backRt.pivot = new Vector2(0f, 0.5f);
-            backRt.anchoredPosition = Vector2.zero;
-            Text backLbl = CreateText("Label", backBtn.transform, font, "← Geri", 15, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
-            StretchFull(backLbl.GetComponent<RectTransform>());
-
-            Text weatherTitle = CreateText("WeatherTitle", subHeader.transform, font, "HAVA DURUMU", 16, FontStyle.Bold, AccentColor, TextAnchor.MiddleRight);
-            RectTransform wTitleRt = weatherTitle.GetComponent<RectTransform>();
-            wTitleRt.anchorMin = new Vector2(0f, 0f);
-            wTitleRt.anchorMax = new Vector2(1f, 1f);
-            wTitleRt.offsetMin = new Vector2(96f, 0f);
-            wTitleRt.offsetMax = Vector2.zero;
+            GameObject weatherPage = CreateSubPageContainer("WeatherCategoryPage", contentGo.transform, 5f);
+            CreateSubPageHeader("WeatherSubHeader", weatherPage.transform, roundedSprite, font, "HAVA DURUMU");
 
             CreateSectionLabel("ConditionHeader", weatherPage.transform, font, "HAVA KOŞULLARI (Çoklu Seçim)");
             Toggle rainToggle = CreateToggleRow("RainCheckbox", weatherPage.transform, roundedSprite, checkRingSprite, checkMarkSprite, font, "Yağmurlu Hava", null, 36f);
@@ -230,23 +213,28 @@ namespace VRAtis.EditorTools
             CreateDivider("Divider_2", weatherPage.transform);
             Toggle autoTimeToggle = CreateToggleRow("AutoTimeCheckbox", weatherPage.transform, roundedSprite, checkRingSprite, checkMarkSprite, font, "[T] Otomatik Zaman Akışı", null, 34f);
 
+            // Page 3: Optical Camera & LED Tracker Sub-Panel
+            GameObject opticalPage = BuildOpticalCategoryPage(contentGo.transform, roundedSprite, checkRingSprite, checkMarkSprite, font);
+
             // Wire controller onto Canvas root
             SettingsMenuController menuCtrl = canvasGo.AddComponent<SettingsMenuController>();
             SerializedObject so = new SerializedObject(menuCtrl);
             so.FindProperty("timeOfDayController").objectReferenceValue = Object.FindAnyObjectByType<DynamicTimeOfDay>();
             so.FindProperty("environmentManager").objectReferenceValue = Object.FindAnyObjectByType<EnvironmentManager>();
             so.FindProperty("stereoRig").objectReferenceValue = Object.FindAnyObjectByType<CardboardStereoRig>();
+            so.FindProperty("opticalTracker").objectReferenceValue = Object.FindAnyObjectByType<OpticalRifleTracker>();
             so.FindProperty("primaryEyeRoot").objectReferenceValue = primaryRootRt;
             so.ApplyModifiedPropertiesWithoutUndo();
 
             weatherPage.SetActive(false);
+            opticalPage.SetActive(false);
             windowGo.SetActive(false);
 
             EditorUtility.SetDirty(canvasGo);
             EditorSceneManager.MarkSceneDirty(canvasGo.scene);
             EditorSceneManager.SaveOpenScenes();
             EditorPrefs.SetBool(AutoSetupVersionKey, true);
-            Debug.Log("[SettingsMenuSetupTool] V3 Kuruldu: Çift göz stereo senkron Ayarlar menüsü + VR Mercek (66mm) kontrolü!");
+            Debug.Log("[SettingsMenuSetupTool] V4 Kuruldu: Çift göz stereo Ayarlar menüsü + VR Mercek + Optik LED Takip kalibrasyonu!");
         }
 
         private static void EnsureEventSystem()
@@ -427,6 +415,157 @@ namespace VRAtis.EditorTools
             Image splitBg = vrSplit.GetComponent<Image>();
             if (splitBg != null)
                 splitBg.color = HeaderBgColor;
+        }
+
+        private static GameObject CreateSubPageContainer(string name, Transform parent, float spacing)
+        {
+            GameObject page = new GameObject(name);
+            page.transform.SetParent(parent, false);
+            StretchFull(page.AddComponent<RectTransform>());
+            VerticalLayoutGroup layout = page.AddComponent<VerticalLayoutGroup>();
+            layout.spacing = spacing;
+            layout.childAlignment = TextAnchor.UpperCenter;
+            layout.childControlWidth = true;
+            layout.childControlHeight = true;
+            layout.childForceExpandWidth = true;
+            layout.childForceExpandHeight = false;
+            return page;
+        }
+
+        private static void CreateSubPageHeader(string name, Transform parent, Sprite roundedSprite, Font font, string title)
+        {
+            GameObject subHeader = CreateRowContainer(name, parent, 38f);
+            Button backBtn = CreateRoundedButton("BackButton", subHeader.transform, roundedSprite, CardBgColor, new Vector2(86f, 34f));
+            RectTransform backRt = backBtn.GetComponent<RectTransform>();
+            backRt.anchorMin = new Vector2(0f, 0.5f);
+            backRt.anchorMax = new Vector2(0f, 0.5f);
+            backRt.pivot = new Vector2(0f, 0.5f);
+            backRt.anchoredPosition = Vector2.zero;
+            Text backLbl = CreateText("Label", backBtn.transform, font, "← Geri", 15, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(backLbl.GetComponent<RectTransform>());
+
+            Text titleLbl = CreateText("SubTitle", subHeader.transform, font, title, 16, FontStyle.Bold, AccentColor, TextAnchor.MiddleRight);
+            RectTransform tRt = titleLbl.GetComponent<RectTransform>();
+            tRt.anchorMin = Vector2.zero;
+            tRt.anchorMax = Vector2.one;
+            tRt.offsetMin = new Vector2(96f, 0f);
+            tRt.offsetMax = Vector2.zero;
+        }
+
+        private static GameObject BuildOpticalCategoryPage(
+            Transform parent,
+            Sprite roundedSprite,
+            Sprite boxSprite,
+            Sprite markSprite,
+            Font font)
+        {
+            GameObject page = CreateSubPageContainer("OpticalCategoryPage", parent, 6f);
+            CreateSubPageHeader("OpticSubHeader", page.transform, roundedSprite, font, "OPTİK TAKİP (LED)");
+
+            GameObject previewRow = CreateRowContainer("OpticPreviewRow", page.transform, 118f);
+            HorizontalLayoutGroup previewLayout = previewRow.AddComponent<HorizontalLayoutGroup>();
+            previewLayout.spacing = 10f;
+            previewLayout.childControlWidth = true;
+            previewLayout.childControlHeight = true;
+            previewLayout.childForceExpandWidth = false;
+            previewLayout.childForceExpandHeight = true;
+
+            GameObject frameGo = CreateRoundedPanel("PreviewFrame", previewRow.transform, roundedSprite, new Color(0.03f, 0.05f, 0.08f, 1f));
+            LayoutElement frameLe = frameGo.AddComponent<LayoutElement>();
+            frameLe.minWidth = 152f;
+            frameLe.preferredWidth = 152f;
+
+            GameObject rawGo = new GameObject("OpticPreviewImage");
+            rawGo.transform.SetParent(frameGo.transform, false);
+            RawImage rawImg = rawGo.AddComponent<RawImage>();
+            rawImg.color = new Color(0.85f, 0.90f, 0.96f, 1f);
+            rawImg.raycastTarget = false;
+            RectTransform rawRt = rawImg.GetComponent<RectTransform>();
+            rawRt.anchorMin = Vector2.zero;
+            rawRt.anchorMax = Vector2.one;
+            rawRt.offsetMin = new Vector2(4f, 4f);
+            rawRt.offsetMax = new Vector2(-4f, -4f);
+
+            GameObject statusCol = new GameObject("StatusColumn");
+            statusCol.transform.SetParent(previewRow.transform, false);
+            LayoutElement colLe = statusCol.AddComponent<LayoutElement>();
+            colLe.flexibleWidth = 1f;
+            VerticalLayoutGroup colLayout = statusCol.AddComponent<VerticalLayoutGroup>();
+            colLayout.spacing = 6f;
+            colLayout.childControlWidth = true;
+            colLayout.childControlHeight = true;
+            colLayout.childForceExpandWidth = true;
+            colLayout.childForceExpandHeight = false;
+
+            GameObject statusBox = CreateRoundedPanel("StatusBox", statusCol.transform, roundedSprite, CardBgColor);
+            LayoutElement boxLe = statusBox.AddComponent<LayoutElement>();
+            boxLe.flexibleHeight = 1f;
+            boxLe.minHeight = 72f;
+            Text statusTxt = CreateText("OpticStatusText", statusBox.transform, font, "Kamera bekleniyor...\nLED A: YOK | LED B: YOK\nMesafe: -- cm", 13, FontStyle.Normal, TextPrimaryColor, TextAnchor.MiddleLeft);
+            RectTransform stRt = statusTxt.GetComponent<RectTransform>();
+            stRt.anchorMin = Vector2.zero;
+            stRt.anchorMax = Vector2.one;
+            stRt.offsetMin = new Vector2(10f, 6f);
+            stRt.offsetMax = new Vector2(-10f, -6f);
+
+            Button zeroBtn = CreateRoundedButton("OpticZeroButton", statusCol.transform, roundedSprite, new Color(0.14f, 0.28f, 0.25f, 0.95f), new Vector2(0f, 34f));
+            LayoutElement zeroLe = zeroBtn.gameObject.AddComponent<LayoutElement>();
+            zeroLe.minHeight = 34f;
+            zeroLe.preferredHeight = 34f;
+            Text zeroTxt = CreateText("Label", zeroBtn.transform, font, "Mevcut Konumu Sıfırla", 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(zeroTxt.GetComponent<RectTransform>());
+
+            CreateToggleRow("OpticEnableCheckbox", page.transform, roundedSprite, boxSprite, markSprite, font, "Optik 3B Konum Takibi Açık", null, 34f);
+
+            Button modeBtn = CreateRoundedButton("OpticModeButton", page.transform, roundedSprite, CardBgColor, new Vector2(0f, 34f));
+            LayoutElement modeLe = modeBtn.gameObject.AddComponent<LayoutElement>();
+            modeLe.minHeight = 34f;
+            modeLe.preferredHeight = 34f;
+            Text modeLbl = CreateText("Label", modeBtn.transform, font, "Hedef Modu: Yeşil + Kırmızı", 14, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(modeLbl.GetComponent<RectTransform>());
+
+            Button axisBtn = CreateRoundedButton("OpticAxisButton", page.transform, roundedSprite, CardBgColor, new Vector2(0f, 34f));
+            LayoutElement axisLe = axisBtn.gameObject.AddComponent<LayoutElement>();
+            axisLe.minHeight = 34f;
+            axisLe.preferredHeight = 34f;
+            Text axisLbl = CreateText("Label", axisBtn.transform, font, "LED Dizilimi: Yatay (Sağ-Sol)", 14, FontStyle.Normal, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(axisLbl.GetComponent<RectTransform>());
+
+            CreateStepAdjustRow("OpticSpacingRow", page.transform, roundedSprite, font, "SpacingMinusButton", "SpacingValueText", "SpacingPlusButton", "-2 cm", "LED Aralığı: 14 cm", "+2 cm");
+            CreateStepAdjustRow("OpticDomRow", page.transform, roundedSprite, font, "DomMinusButton", "DomValueText", "DomPlusButton", "-", "Renk Eşiği: 36", "+");
+
+            return page;
+        }
+
+        private static void CreateStepAdjustRow(
+            string rowName,
+            Transform parent,
+            Sprite roundedSprite,
+            Font font,
+            string minusBtnName,
+            string valueTxtName,
+            string plusBtnName,
+            string minusLabel,
+            string initialValue,
+            string plusLabel)
+        {
+            GameObject row = CreateRowContainer(rowName, parent, 34f);
+            HorizontalLayoutGroup hLayout = row.AddComponent<HorizontalLayoutGroup>();
+            hLayout.spacing = 8f;
+            hLayout.childControlWidth = true;
+            hLayout.childControlHeight = true;
+            hLayout.childForceExpandWidth = false;
+            hLayout.childForceExpandHeight = true;
+
+            CreateCompactButton(minusBtnName, row.transform, roundedSprite, CardBgColor, font, minusLabel, 72f);
+
+            GameObject valGo = CreateRoundedPanel("ValueBox", row.transform, roundedSprite, HeaderBgColor);
+            LayoutElement valLe = valGo.AddComponent<LayoutElement>();
+            valLe.flexibleWidth = 1f;
+            Text valTxt = CreateText(valueTxtName, valGo.transform, font, initialValue, 14, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(valTxt.GetComponent<RectTransform>());
+
+            CreateCompactButton(plusBtnName, row.transform, roundedSprite, CardBgColor, font, plusLabel, 72f);
         }
 
         private static Button CreateCompactButton(string name, Transform parent, Sprite roundedSprite, Color bgColor, Font font, string label, float width)

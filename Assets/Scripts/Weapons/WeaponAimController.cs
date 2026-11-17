@@ -21,6 +21,8 @@ namespace VRAtis.Weapons
         [SerializeField] private Transform mainCameraTransform;
         [SerializeField] private HeadTrackingCameraController headTracker;
         [SerializeField] private CardboardStereoRig stereoRig;
+        [SerializeField] private OpticalRifleTracker opticalTracker;
+        [SerializeField] private Esp32RifleReceiver rifleReceiver;
 
         [Header("Nişan Girişi (Klavye Testi & Donanım)")]
         [Tooltip("Açıkken Q tuşu ile nişan aç/kapa (Toggle); kapalıyken basılı tutma (Hold) çalışır.")]
@@ -104,6 +106,9 @@ namespace VRAtis.Weapons
 
         private void Update()
         {
+            if (rifleReceiver != null)
+                _hardwareShoulderActive = rifleReceiver.IsConnected && rifleReceiver.IsShoulderPressed;
+
 #if ENABLE_INPUT_SYSTEM
             if (Keyboard.current != null)
             {
@@ -196,6 +201,9 @@ namespace VRAtis.Weapons
 
         private void UpdateAimCameraPose()
         {
+            if (opticalTracker != null && opticalTracker.IsActivelyTrackingPosition && !_hardwareShoulderActive)
+                return;
+
             Vector3 readyPos = headTracker != null ? headTracker.ReadyWorldPosition : _fallbackReadyPos;
             Quaternion readyRot = headTracker != null ? headTracker.ReadyWorldRotation : _fallbackReadyRot;
 
@@ -277,6 +285,13 @@ namespace VRAtis.Weapons
 
             if (stereoRig == null && mainCameraTransform != null)
                 stereoRig = mainCameraTransform.GetComponent<CardboardStereoRig>();
+
+            if (opticalTracker == null && playerRifleTransform != null)
+                opticalTracker = playerRifleTransform.GetComponent<OpticalRifleTracker>();
+            if (opticalTracker == null)
+                opticalTracker = FindAnyObjectByType<OpticalRifleTracker>();
+            if (rifleReceiver == null)
+                rifleReceiver = FindAnyObjectByType<Esp32RifleReceiver>();
         }
 
         private void CacheReadyPoseAndSightOffset()

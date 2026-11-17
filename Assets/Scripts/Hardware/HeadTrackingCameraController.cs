@@ -20,6 +20,7 @@ namespace VRAtis.Hardware
         [Header("Bağlantılar")]
         [Tooltip("Sıfırlama (R) sırasında kamerayla senkron hizalanacak tüfek kontrolcüsü.")]
         [SerializeField] private RifleOrientationController rifleOrientationController;
+        [SerializeField] private OpticalRifleTracker opticalTracker;
 
         [Header("Mobil Kafa Takibi (200 Hz GameRotationVector + 1-Euro Filtre)")]
         [Tooltip("Android açılışında ekranı yatay Cardboard (LandscapeLeft) kilidine ve uyku modunu kapalıya alır.")]
@@ -58,6 +59,9 @@ namespace VRAtis.Hardware
         [SerializeField] private bool recenterOnTwoFingerTap = true;
 
         private static readonly Quaternion AttitudeBaseRotation = Quaternion.Euler(90f, 0f, 0f);
+        private static readonly Quaternion Roll180Rotation = Quaternion.Euler(0f, 0f, 180f);
+
+        public static bool IsLandscapeRightActive { get; private set; }
 
         private Quaternion _initialForwardYaw = Quaternion.identity;
         private Quaternion _sensorYawOffset = Quaternion.identity;
@@ -66,6 +70,11 @@ namespace VRAtis.Hardware
         private float _pcYawOffsetDeg;
         private float _pcPitchDeg;
         private float _twoFingerCooldown;
+        private ScreenOrientation _activeLandscapeOrientation = ScreenOrientation.LandscapeLeft;
+        private ScreenOrientation _lastObservedScreenOrientation = ScreenOrientation.Unknown;
+        private float _upsideDownHoldTimer;
+        private float _orientationSwitchCooldown;
+        private bool _isRoll180Compensated;
 
         // Gyroscope + Attitude velocity-predicted filter state across 120Hz frames
 #if ENABLE_INPUT_SYSTEM
@@ -103,6 +112,8 @@ namespace VRAtis.Hardware
 
             if (rifleOrientationController == null)
                 rifleOrientationController = FindAnyObjectByType<RifleOrientationController>();
+            if (opticalTracker == null)
+                opticalTracker = FindAnyObjectByType<OpticalRifleTracker>();
 
             Vector3 flatFwd = new Vector3(transform.forward.x, 0f, transform.forward.z);
             if (flatFwd.sqrMagnitude > 1e-4f)
@@ -122,7 +133,16 @@ namespace VRAtis.Hardware
 
                 if (lockLandscapeOnMobile)
                 {
-                    Screen.orientation = ScreenOrientation.LandscapeLeft;
+                    Screen.autorotateToPortrait = false;
+                    Screen.autorotateToPortraitUpsideDown = false;
+                    Screen.autorotateToLandscapeLeft = true;
+                    Screen.autorotateToLandscapeRight = true;
+                    _activeLandscapeOrientation = Screen.orientation == ScreenOrientation.LandscapeRight
+                        ? ScreenOrientation.LandscapeRight
+                        : ScreenOrientation.LandscapeLeft;
+                    Screen.orientation = _activeLandscapeOrientation;
+                    _lastObservedScreenOrientation = Screen.orientation;
+                    IsLandscapeRightActive = _activeLandscapeOrientation == ScreenOrientation.LandscapeRight;
                     Screen.sleepTimeout = SleepTimeout.NeverSleep;
                 }
             }
@@ -151,6 +171,8 @@ namespace VRAtis.Hardware
 
             if (_twoFingerCooldown > 0f)
                 _twoFingerCooldown -= rawDt;
+            if (_orientationSwitchCooldown > 0f)
+                _orientationSwitchCooldown -= rawDt;
 
             bool wantRecenter = false;
 #if ENABLE_INPUT_SYSTEM
@@ -180,7 +202,9 @@ namespace VRAtis.Hardware
                 _sensorReady = true;
                 _elapsedSinceSample += rawDt;
 
-                if ((autoZeroYawOnFirstReading && !_hasZeroedSensor) || wantRecenter)
+                UpdateLandscapeOrientationIfInverted(ref worldHeadRot, rawDt, out bool orientationJustChanged);
+
+                if ((autoZeroYawOnFirstReading && !_hasZeroedSensor) || wantRecenter || orientationJustChanged)
                 {
                     _hasZeroedSensor = true;
                     _lastWorldSample = worldHeadRot;
@@ -195,8 +219,10 @@ namespace VRAtis.Hardware
                     _smoothedCutoff = Mathf.Max(28f, minSmoothingSpeed);
                     transform.rotation = _smoothedHeadRot;
 
-                    if (wantRecenter && rifleOrientationController != null)
+                    if ((wantRecenter || orientationJustChanged) && rifleOrientationController != null)
                         rifleOrientationController.RecenterToHeadForward();
+                    if (wantRecenter && opticalTracker != null)
+                        opticalTracker.RecenterOpticalZero();
                     return;
                 }
 
@@ -303,6 +329,9 @@ namespace VRAtis.Hardware
 
             if (TryReadPhoneAttitude(out Quaternion worldHeadRot))
             {
+                if (_isRoll180Compensated)
+                    worldHeadRot = worldHeadRot * Roll180Rotation;
+
                 Quaternion targetRot = _sensorYawOffset * worldHeadRot;
                 ComputeExactAngleAxis(_lastTargetSample, targetRot, out float lateDeltaDeg, out _);
                 if (lateDeltaDeg > 0.0004f && lateDeltaDeg < 25f)
@@ -334,6 +363,7 @@ namespace VRAtis.Hardware
         {
             if (TryReadPhoneAttitude(out Quaternion worldHeadRot))
             {
+                UpdateLandscapeOrientationIfInverted(ref worldHeadRot, 0f, out _);
                 _hasZeroedSensor = true;
                 _lastWorldSample = worldHeadRot;
                 _elapsedSinceSample = 0f;
@@ -356,6 +386,66 @@ namespace VRAtis.Hardware
 
             if (rifleOrientationController != null)
                 rifleOrientationController.RecenterToHeadForward();
+            if (opticalTracker != null)
+                opticalTracker.RecenterOpticalZero();
+        }
+
+        private void UpdateLandscapeOrientationIfInverted(ref Quaternion worldHeadRot, float dt, out bool orientationJustChanged)
+        {
+            orientationJustChanged = false;
+
+            if (Application.isMobilePlatform && lockLandscapeOnMobile)
+            {
+                ScreenOrientation currentScreen = Screen.orientation;
+                if ((currentScreen == ScreenOrientation.LandscapeLeft || currentScreen == ScreenOrientation.LandscapeRight) &&
+                    currentScreen != _lastObservedScreenOrientation)
+                {
+                    if (_lastObservedScreenOrientation != ScreenOrientation.Unknown)
+                        orientationJustChanged = true;
+                    _lastObservedScreenOrientation = currentScreen;
+                    _activeLandscapeOrientation = currentScreen;
+                }
+            }
+
+            Vector3 camUp = worldHeadRot * Vector3.up;
+            Vector3 camFwd = worldHeadRot * Vector3.forward;
+            bool isUpsideDownRoll = camUp.y < -0.45f && Mathf.Abs(camFwd.y) < 0.75f;
+
+            if (Application.isMobilePlatform && lockLandscapeOnMobile)
+            {
+                if (isUpsideDownRoll)
+                {
+                    _upsideDownHoldTimer += dt;
+                    if (!_hasZeroedSensor || (_upsideDownHoldTimer >= 0.22f && _orientationSwitchCooldown <= 0f))
+                    {
+                        _upsideDownHoldTimer = 0f;
+                        _orientationSwitchCooldown = 0.85f;
+                        _activeLandscapeOrientation = _activeLandscapeOrientation == ScreenOrientation.LandscapeRight
+                            ? ScreenOrientation.LandscapeLeft
+                            : ScreenOrientation.LandscapeRight;
+                        Screen.orientation = _activeLandscapeOrientation;
+                        orientationJustChanged = true;
+                    }
+                }
+                else
+                {
+                    _upsideDownHoldTimer = 0f;
+                }
+            }
+
+            if (camUp.y < -0.35f && Mathf.Abs(camFwd.y) < 0.75f)
+            {
+                _isRoll180Compensated = true;
+                worldHeadRot = worldHeadRot * Roll180Rotation;
+            }
+            else
+            {
+                _isRoll180Compensated = false;
+            }
+
+            IsLandscapeRightActive = _activeLandscapeOrientation == ScreenOrientation.LandscapeRight
+                || Screen.orientation == ScreenOrientation.LandscapeRight
+                || _isRoll180Compensated;
         }
 
 #if ENABLE_INPUT_SYSTEM
@@ -484,7 +574,8 @@ namespace VRAtis.Hardware
 
                 if (_gyroHasValidReadings && sqrMag < 1000f)
                 {
-                    Vector3 localDegPerSec = new Vector3(-rawRadPerSec.x, -rawRadPerSec.y, rawRadPerSec.z) * Mathf.Rad2Deg;
+                    float signXY = _isRoll180Compensated ? 1f : -1f;
+                    Vector3 localDegPerSec = new Vector3(signXY * rawRadPerSec.x, signXY * rawRadPerSec.y, rawRadPerSec.z) * Mathf.Rad2Deg;
                     worldAngularVelDegPerSec = Vector3.ClampMagnitude(currentTargetRot * localDegPerSec, 720f);
                     return true;
                 }

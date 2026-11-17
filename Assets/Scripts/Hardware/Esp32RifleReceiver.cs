@@ -55,6 +55,7 @@ namespace VRAtis.Hardware
 
         public Quaternion RawImuQuaternion { get; private set; } = Quaternion.identity;
         public bool IsTriggerPressed { get; private set; }
+        public bool IsShoulderPressed { get; private set; }
         public uint TotalShotCount { get; private set; }
         public uint PacketSequence { get; private set; }
         public bool IsConnected { get; private set; }
@@ -80,6 +81,7 @@ namespace VRAtis.Hardware
         private readonly object _stateLock = new object();
         private Quaternion _sharedQuat = Quaternion.identity;
         private bool _sharedTriggerPressed;
+        private bool _sharedShoulderPressed;
         private uint _sharedShotCount;
         private uint _sharedPacketSeq;
         private bool _hasReceivedAnyPacket;
@@ -238,7 +240,8 @@ namespace VRAtis.Hardware
                     lock (_stateLock)
                     {
                         _sharedQuat = parsed;
-                        _sharedTriggerPressed = trig != 0;
+                        _sharedTriggerPressed = (trig & 0x01) != 0;
+                        _sharedShoulderPressed = (trig & 0x02) != 0;
                         _sharedShotCount = shots;
                         _sharedPacketSeq++;
                         _hasReceivedAnyPacket = true;
@@ -292,6 +295,7 @@ namespace VRAtis.Hardware
 
             Quaternion latestQuat;
             bool latestTrigger;
+            bool latestShoulder;
             uint latestShots;
             uint latestSeq;
             bool hasPacket;
@@ -301,6 +305,7 @@ namespace VRAtis.Hardware
             {
                 latestQuat = _sharedQuat;
                 latestTrigger = _sharedTriggerPressed;
+                latestShoulder = _sharedShoulderPressed;
                 latestShots = _sharedShotCount;
                 latestSeq = _sharedPacketSeq;
                 hasPacket = _hasReceivedAnyPacket;
@@ -322,6 +327,7 @@ namespace VRAtis.Hardware
                 IsConnected = elapsedMs <= connectionTimeoutMs;
                 RawImuQuaternion = latestQuat;
                 IsTriggerPressed = latestTrigger;
+                IsShoulderPressed = latestShoulder;
                 TotalShotCount = latestShots;
                 PacketSequence = latestSeq;
 

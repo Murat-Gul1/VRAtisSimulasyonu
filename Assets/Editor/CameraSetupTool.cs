@@ -9,7 +9,7 @@ namespace VRAtis.EditorTools
     [InitializeOnLoad]
     public static class CameraSetupTool
     {
-        private const string AutoSetupVersionKey = "VRAtis_Camera_V7_Done";
+        private const string AutoSetupVersionKey = "VRAtis_Camera_V15_Done";
 
         static CameraSetupTool()
         {
@@ -28,6 +28,7 @@ namespace VRAtis.EditorTools
             if (mainCam.GetComponent<HeadTrackingCameraController>() != null &&
                 mainCam.GetComponent<CardboardStereoRig>() != null &&
                 Object.FindAnyObjectByType<WeaponAimController>() != null &&
+                Object.FindAnyObjectByType<OpticalRifleTracker>() != null &&
                 EditorPrefs.GetBool(AutoSetupVersionKey, false))
                 return;
 
@@ -50,9 +51,9 @@ namespace VRAtis.EditorTools
             RifleOrientationController rifleCtrl = Object.FindAnyObjectByType<RifleOrientationController>();
             if (rifleCtrl != null)
             {
-                // Natural right-handed ready stance: eye/camera rests slightly left-above the buttstock side
+                // Natural right-handed shouldered stance: eye/camera rests just left-above the receiver (8 cm left, 14 cm up, 25 cm back)
                 Vector3 riflePos = rifleCtrl.transform.position;
-                mainCam.transform.position = new Vector3(riflePos.x - 0.22f, riflePos.y + 0.18f, riflePos.z - 0.56f);
+                mainCam.transform.position = new Vector3(riflePos.x - 0.08f, riflePos.y + 0.14f, riflePos.z - 0.25f);
                 mainCam.transform.rotation = Quaternion.identity;
             }
 
@@ -85,8 +86,13 @@ namespace VRAtis.EditorTools
 
             if (rifleCtrl != null)
             {
+                OpticalRifleTracker opticalTracker = rifleCtrl.GetComponent<OpticalRifleTracker>();
+                if (opticalTracker == null)
+                    opticalTracker = Undo.AddComponent<OpticalRifleTracker>(rifleCtrl.gameObject);
+
                 SerializedObject trackerSo = new SerializedObject(headTracker);
                 trackerSo.FindProperty("rifleOrientationController").objectReferenceValue = rifleCtrl;
+                trackerSo.FindProperty("opticalTracker").objectReferenceValue = opticalTracker;
                 trackerSo.FindProperty("requestedSensorRateHz").floatValue = 200f;
                 trackerSo.FindProperty("minSmoothingSpeed").floatValue = 32f;
                 trackerSo.FindProperty("maxSmoothingSpeed").floatValue = 125f;
@@ -104,6 +110,24 @@ namespace VRAtis.EditorTools
                 Transform redDotAnchor = FindDeepChild(rifleCtrl.transform, "RedDotAnchor");
                 RedDotSightController redDotSight = rifleCtrl.GetComponentInChildren<RedDotSightController>(true);
 
+                SerializedObject optSo = new SerializedObject(opticalTracker);
+                optSo.FindProperty("headCameraTransform").objectReferenceValue = mainCam.transform;
+                optSo.FindProperty("weaponAimController").objectReferenceValue = aimCtrl;
+                optSo.FindProperty("redDotSight").objectReferenceValue = redDotSight;
+                optSo.FindProperty("redDotAnchor").objectReferenceValue = redDotAnchor;
+                optSo.FindProperty("rifleReceiver").objectReferenceValue = receiver;
+                optSo.FindProperty("ledSpacingMeters").floatValue = 0.06f;
+                optSo.FindProperty("ledOffsetFromPivotMeters").vector3Value = Vector3.zero;
+                optSo.FindProperty("readyLocalOffsetMeters").vector3Value = new Vector3(0.08f, -0.14f, 0.25f);
+                optSo.FindProperty("zDepthScale").floatValue = 0.45f;
+                optSo.FindProperty("minColorDominance").intValue = 105;
+                optSo.FindProperty("minPixelBrightness").intValue = 72;
+                optSo.FindProperty("requestedWidth").intValue = 320;
+                optSo.FindProperty("requestedHeight").intValue = 240;
+                optSo.FindProperty("minPositionSmoothSpeed").floatValue = 12f;
+                optSo.FindProperty("maxPositionSmoothSpeed").floatValue = 38f;
+                optSo.ApplyModifiedPropertiesWithoutUndo();
+
                 SerializedObject aimSo = new SerializedObject(aimCtrl);
                 aimSo.FindProperty("playerRifleTransform").objectReferenceValue = rifleCtrl.transform;
                 aimSo.FindProperty("redDotAnchor").objectReferenceValue = redDotAnchor;
@@ -111,14 +135,16 @@ namespace VRAtis.EditorTools
                 aimSo.FindProperty("mainCameraTransform").objectReferenceValue = mainCam.transform;
                 aimSo.FindProperty("headTracker").objectReferenceValue = headTracker;
                 aimSo.FindProperty("stereoRig").objectReferenceValue = stereoRig;
+                aimSo.FindProperty("opticalTracker").objectReferenceValue = opticalTracker;
+                aimSo.FindProperty("rifleReceiver").objectReferenceValue = receiver;
                 aimSo.ApplyModifiedPropertiesWithoutUndo();
 
                 if (redDotSight != null)
                 {
                     SerializedObject dotSo = new SerializedObject(redDotSight);
                     dotSo.FindProperty("dotColor").colorValue = new Color(3.6f, 0.16f, 0.08f, 1f);
-                    dotSo.FindProperty("alwaysKeepReticleOn").boolValue = false;
-                    dotSo.FindProperty("reticlePower").floatValue = 0f;
+                    dotSo.FindProperty("alwaysKeepReticleOn").boolValue = true;
+                    dotSo.FindProperty("reticlePower").floatValue = 1f;
                     dotSo.ApplyModifiedPropertiesWithoutUndo();
                 }
             }
