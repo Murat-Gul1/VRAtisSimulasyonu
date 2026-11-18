@@ -59,6 +59,13 @@ namespace VRAtis.UI
             public Button OpticDomMinusButton;
             public Text OpticDomValueText;
             public Button OpticDomPlusButton;
+            public GameObject CalibrationBannerRoot;
+            public RectTransform CalibrationBannerRect;
+            public Image CalibrationAccentBar;
+            public Text CalibrationTitleText;
+            public Text CalibrationDetailText;
+            public RectTransform CalibrationProgressFillRect;
+            public Image CalibrationProgressFillImage;
         }
 
         [Header("Referanslar")]
@@ -82,6 +89,13 @@ namespace VRAtis.UI
         private float _lastDisplayedLensMm = -1f;
         private float _lastDisplayedPhoneMm = -1f;
         private float _nextOpticalUiRefreshTime;
+        private OpticalRifleTracker.CalibrationPhase _lastBannerPhase = (OpticalRifleTracker.CalibrationPhase)(-1);
+        private int _lastBannerSec = -1;
+        private int _lastBannerTenths = -1;
+        private int _lastBannerLedMask = -1;
+        private bool _lastBannerCameraRunning;
+        private bool _lastBannerWaitingPerm;
+        private bool _lastBannerHiddenByMenu = true;
 
         public event Action<bool, bool> OnWeatherTogglesChanged;
 
@@ -107,6 +121,8 @@ namespace VRAtis.UI
 
             if (primaryEyeRoot == null)
                 return;
+
+            EnsureCalibrationBannerExists(primaryEyeRoot);
 
             _primaryView = ResolveAndBindView(primaryEyeRoot);
             _views.Add(_primaryView);
@@ -135,6 +151,7 @@ namespace VRAtis.UI
             SyncVrWidgetsToViews();
             SyncOpticalWidgetsToViews();
             ApplyStereoLayoutIfNeeded(force: true);
+            SyncCalibrationBannerToViews();
         }
 
         private void Update()
@@ -159,6 +176,8 @@ namespace VRAtis.UI
                     SyncOpticalWidgetsToViews();
                 }
             }
+
+            SyncCalibrationBannerToViews();
         }
 
         private void LateUpdate()
@@ -233,6 +252,7 @@ namespace VRAtis.UI
         {
             Transform gearTr = root.Find("BottomRight_SettingsButton");
             Transform winTr = root.Find("SettingsWindow");
+            Transform calTr = root.Find("OpticalCalibrationBanner");
             Transform contentTr = winTr != null ? winTr.Find("ContentArea") : null;
             Transform mainTr = contentTr != null ? contentTr.Find("MainCategoryPage") : null;
             Transform weatherTr = contentTr != null ? contentTr.Find("WeatherCategoryPage") : null;
@@ -278,6 +298,13 @@ namespace VRAtis.UI
                 OpticDomMinusButton = FindChildComponent<Button>(opticalTr, "OpticDomRow/DomMinusButton"),
                 OpticDomValueText = FindChildComponent<Text>(opticalTr, "OpticDomRow/ValueBox/DomValueText"),
                 OpticDomPlusButton = FindChildComponent<Button>(opticalTr, "OpticDomRow/DomPlusButton"),
+                CalibrationBannerRoot = calTr != null ? calTr.gameObject : null,
+                CalibrationBannerRect = calTr as RectTransform,
+                CalibrationAccentBar = FindChildComponent<Image>(calTr, "AccentBar"),
+                CalibrationTitleText = FindChildComponent<Text>(calTr, "TitleText"),
+                CalibrationDetailText = FindChildComponent<Text>(calTr, "DetailText"),
+                CalibrationProgressFillRect = FindChildComponent<RectTransform>(calTr, "ProgressTrack/ProgressFill"),
+                CalibrationProgressFillImage = FindChildComponent<Image>(calTr, "ProgressTrack/ProgressFill"),
                 TimePresetToggles = new Toggle[timePresetHours != null ? timePresetHours.Length : 0]
             };
 
@@ -443,6 +470,25 @@ namespace VRAtis.UI
                     view.WindowRect.anchoredPosition = new Vector2(-28f, 104f);
                     view.WindowRect.sizeDelta = new Vector2(430f, 560f);
                     view.WindowRect.localScale = Vector3.one;
+                }
+            }
+
+            if (view.CalibrationBannerRect != null)
+            {
+                view.CalibrationBannerRect.anchorMin = new Vector2(0.5f, 0.5f);
+                view.CalibrationBannerRect.anchorMax = new Vector2(0.5f, 0.5f);
+                view.CalibrationBannerRect.pivot = new Vector2(0.5f, 0.5f);
+                if (isSplit)
+                {
+                    view.CalibrationBannerRect.anchoredPosition = new Vector2(0f, 225f);
+                    view.CalibrationBannerRect.sizeDelta = new Vector2(368f, 102f);
+                    view.CalibrationBannerRect.localScale = new Vector3(0.92f, 0.92f, 1f);
+                }
+                else
+                {
+                    view.CalibrationBannerRect.anchoredPosition = new Vector2(0f, 320f);
+                    view.CalibrationBannerRect.sizeDelta = new Vector2(520f, 110f);
+                    view.CalibrationBannerRect.localScale = Vector3.one;
                 }
             }
         }
@@ -668,7 +714,7 @@ namespace VRAtis.UI
             if (tracker == null)
                 return;
 
-            tracker.RecenterOpticalZero();
+            tracker.RecenterOpticalZero(startGuidedCountdown: false);
             SyncOpticalWidgetsToViews();
         }
 
@@ -760,7 +806,224 @@ namespace VRAtis.UI
 
             string markA = tracker.IsLedAFound ? "✓" : "✗";
             string markB = tracker.IsLedBFound ? "✓" : "✗";
+            if (tracker.CurrentCalibrationPhase == OpticalRifleTracker.CalibrationPhase.PreparingHeadset)
+                return $"Durum: Hazırlık geri sayımı ({Mathf.CeilToInt(tracker.CalibrationRemainingSeconds)} sn)\nKam: {tracker.ProcessedWidth}x{tracker.ProcessedHeight} {tracker.CameraUpdateHz:F0}Hz Açı:{tracker.CameraRotationAngle}°";
+            if (tracker.CurrentCalibrationPhase == OpticalRifleTracker.CalibrationPhase.HoldingSteady)
+                return $"Durum: Sabit tutuluyor ({tracker.CalibrationRemainingSeconds:F1} sn) A:{markA} B:{markB}\nKam: {tracker.ProcessedWidth}x{tracker.ProcessedHeight} {tracker.CameraUpdateHz:F0}Hz Açı:{tracker.CameraRotationAngle}°";
+
             return $"Durum: LED Aranıyor (A:{markA} B:{markB})\nKam: {tracker.ProcessedWidth}x{tracker.ProcessedHeight} {tracker.CameraUpdateHz:F0}Hz Açı:{tracker.CameraRotationAngle}°";
+        }
+
+        private static void EnsureCalibrationBannerExists(RectTransform eyeRoot)
+        {
+            if (eyeRoot == null || eyeRoot.Find("OpticalCalibrationBanner") != null)
+                return;
+
+            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            Image gearImg = FindChildComponent<Image>(eyeRoot, "BottomRight_SettingsButton");
+            Sprite panelSprite = gearImg != null ? gearImg.sprite : null;
+
+            GameObject bannerGo = new GameObject("OpticalCalibrationBanner");
+            bannerGo.transform.SetParent(eyeRoot, false);
+            RectTransform bannerRt = bannerGo.AddComponent<RectTransform>();
+            bannerRt.anchorMin = new Vector2(0.5f, 0.5f);
+            bannerRt.anchorMax = new Vector2(0.5f, 0.5f);
+            bannerRt.pivot = new Vector2(0.5f, 0.5f);
+            bannerRt.anchoredPosition = new Vector2(0f, 225f);
+            bannerRt.sizeDelta = new Vector2(368f, 102f);
+
+            Image bgImg = bannerGo.AddComponent<Image>();
+            bgImg.sprite = panelSprite;
+            bgImg.type = panelSprite != null ? Image.Type.Sliced : Image.Type.Simple;
+            bgImg.color = new Color(0.05f, 0.08f, 0.13f, 0.86f);
+            bgImg.raycastTarget = false;
+
+            // Top accent stripe
+            GameObject accentGo = new GameObject("AccentBar");
+            accentGo.transform.SetParent(bannerGo.transform, false);
+            RectTransform accentRt = accentGo.AddComponent<RectTransform>();
+            accentRt.anchorMin = new Vector2(0.03f, 1f);
+            accentRt.anchorMax = new Vector2(0.97f, 1f);
+            accentRt.pivot = new Vector2(0.5f, 1f);
+            accentRt.anchoredPosition = new Vector2(0f, -4f);
+            accentRt.sizeDelta = new Vector2(0f, 5f);
+            Image accentImg = accentGo.AddComponent<Image>();
+            accentImg.color = new Color(0.24f, 0.72f, 0.98f, 1f);
+            accentImg.raycastTarget = false;
+
+            // Headline / Countdown
+            GameObject titleGo = new GameObject("TitleText");
+            titleGo.transform.SetParent(bannerGo.transform, false);
+            RectTransform titleRt = titleGo.AddComponent<RectTransform>();
+            titleRt.anchorMin = new Vector2(0.04f, 0.44f);
+            titleRt.anchorMax = new Vector2(0.96f, 0.90f);
+            titleRt.offsetMin = Vector2.zero;
+            titleRt.offsetMax = Vector2.zero;
+            Text titleTxt = titleGo.AddComponent<Text>();
+            titleTxt.font = font;
+            titleTxt.fontSize = 22;
+            titleTxt.fontStyle = FontStyle.Bold;
+            titleTxt.alignment = TextAnchor.MiddleCenter;
+            titleTxt.color = new Color(0.95f, 0.98f, 1.0f, 1f);
+            titleTxt.resizeTextForBestFit = true;
+            titleTxt.resizeTextMinSize = 14;
+            titleTxt.resizeTextMaxSize = 24;
+            titleTxt.raycastTarget = false;
+
+            // Detail instruction / LED check
+            GameObject detailGo = new GameObject("DetailText");
+            detailGo.transform.SetParent(bannerGo.transform, false);
+            RectTransform detailRt = detailGo.AddComponent<RectTransform>();
+            detailRt.anchorMin = new Vector2(0.04f, 0.16f);
+            detailRt.anchorMax = new Vector2(0.96f, 0.46f);
+            detailRt.offsetMin = Vector2.zero;
+            detailRt.offsetMax = Vector2.zero;
+            Text detailTxt = detailGo.AddComponent<Text>();
+            detailTxt.font = font;
+            detailTxt.fontSize = 16;
+            detailTxt.alignment = TextAnchor.MiddleCenter;
+            detailTxt.color = new Color(0.76f, 0.84f, 0.92f, 1f);
+            detailTxt.resizeTextForBestFit = true;
+            detailTxt.resizeTextMinSize = 11;
+            detailTxt.resizeTextMaxSize = 17;
+            detailTxt.raycastTarget = false;
+
+            // Bottom progress bar
+            GameObject trackGo = new GameObject("ProgressTrack");
+            trackGo.transform.SetParent(bannerGo.transform, false);
+            RectTransform trackRt = trackGo.AddComponent<RectTransform>();
+            trackRt.anchorMin = new Vector2(0.05f, 0f);
+            trackRt.anchorMax = new Vector2(0.95f, 0f);
+            trackRt.pivot = new Vector2(0.5f, 0f);
+            trackRt.anchoredPosition = new Vector2(0f, 8f);
+            trackRt.sizeDelta = new Vector2(0f, 7f);
+            Image trackImg = trackGo.AddComponent<Image>();
+            trackImg.color = new Color(1f, 1f, 1f, 0.14f);
+            trackImg.raycastTarget = false;
+
+            GameObject fillGo = new GameObject("ProgressFill");
+            fillGo.transform.SetParent(trackGo.transform, false);
+            RectTransform fillRt = fillGo.AddComponent<RectTransform>();
+            fillRt.anchorMin = new Vector2(0f, 0f);
+            fillRt.anchorMax = new Vector2(0f, 1f);
+            fillRt.offsetMin = Vector2.zero;
+            fillRt.offsetMax = Vector2.zero;
+            Image fillImg = fillGo.AddComponent<Image>();
+            fillImg.color = new Color(0.24f, 0.72f, 0.98f, 1f);
+            fillImg.raycastTarget = false;
+
+            bannerGo.SetActive(false);
+        }
+
+        private void SyncCalibrationBannerToViews()
+        {
+            OpticalRifleTracker tracker = ResolveOpticalTracker();
+            OpticalRifleTracker.CalibrationPhase phase = tracker != null
+                ? tracker.CurrentCalibrationPhase
+                : OpticalRifleTracker.CalibrationPhase.Idle;
+
+            bool shouldShow = tracker != null
+                && !IsMenuOpen
+                && phase != OpticalRifleTracker.CalibrationPhase.Idle;
+
+            if (!shouldShow)
+            {
+                if (!_lastBannerHiddenByMenu)
+                {
+                    _lastBannerHiddenByMenu = true;
+                    _lastBannerPhase = (OpticalRifleTracker.CalibrationPhase)(-1);
+                    for (int i = 0; i < _views.Count; i++)
+                    {
+                        if (_views[i].CalibrationBannerRoot != null && _views[i].CalibrationBannerRoot.activeSelf)
+                            _views[i].CalibrationBannerRoot.SetActive(false);
+                    }
+                }
+                return;
+            }
+
+            float rem = tracker.CalibrationRemainingSeconds;
+            float progress = Mathf.Clamp01(tracker.CalibrationProgress01);
+            int secCeil = Mathf.Max(1, Mathf.CeilToInt(rem));
+            int tenths = Mathf.Max(0, Mathf.RoundToInt(rem * 10f));
+            int ledMask = (tracker.IsLedAFound ? 1 : 0) | (tracker.IsLedBFound ? 2 : 0);
+            bool camRunning = tracker.IsCameraRunning;
+            bool waitingPerm = tracker.IsWaitingCameraPermission;
+
+            for (int i = 0; i < _views.Count; i++)
+            {
+                UiView view = _views[i];
+                if (view.CalibrationBannerRoot != null && !view.CalibrationBannerRoot.activeSelf)
+                    view.CalibrationBannerRoot.SetActive(true);
+                if (view.CalibrationProgressFillRect != null)
+                    view.CalibrationProgressFillRect.anchorMax = new Vector2(progress, 1f);
+            }
+
+            bool textDirty = _lastBannerHiddenByMenu
+                || phase != _lastBannerPhase
+                || (phase == OpticalRifleTracker.CalibrationPhase.PreparingHeadset && secCeil != _lastBannerSec)
+                || (phase == OpticalRifleTracker.CalibrationPhase.HoldingSteady && tenths != _lastBannerTenths)
+                || (phase == OpticalRifleTracker.CalibrationPhase.WaitingForLeds &&
+                    (ledMask != _lastBannerLedMask || camRunning != _lastBannerCameraRunning || waitingPerm != _lastBannerWaitingPerm));
+
+            _lastBannerHiddenByMenu = false;
+            if (!textDirty)
+                return;
+
+            _lastBannerPhase = phase;
+            _lastBannerSec = secCeil;
+            _lastBannerTenths = tenths;
+            _lastBannerLedMask = ledMask;
+            _lastBannerCameraRunning = camRunning;
+            _lastBannerWaitingPerm = waitingPerm;
+
+            Color accent;
+            string title;
+            string detail;
+
+            switch (phase)
+            {
+                case OpticalRifleTracker.CalibrationPhase.PreparingHeadset:
+                    accent = new Color(0.24f, 0.72f, 0.98f, 1f);
+                    title = $"YÖN SIFIRLANDI  •  {secCeil}";
+                    detail = "Telefonu VR'a takın ve tüfeği omuzlayın";
+                    break;
+
+                case OpticalRifleTracker.CalibrationPhase.WaitingForLeds:
+                    accent = new Color(0.96f, 0.72f, 0.22f, 1f);
+                    title = "NİŞAN POZİSYONUNDA BEKLEYİN";
+                    if (waitingPerm)
+                        detail = "Kamera izni bekleniyor...";
+                    else if (!camRunning)
+                        detail = "Arka kamera başlatılıyor...";
+                    else
+                        detail = $"LED bekleniyor  •  1:{(tracker.IsLedAFound ? "✓" : "✗")}  2:{(tracker.IsLedBFound ? "✓" : "✗")}";
+                    break;
+
+                case OpticalRifleTracker.CalibrationPhase.HoldingSteady:
+                    accent = new Color(0.24f, 0.88f, 0.58f, 1f);
+                    title = $"LED GÖRÜLDÜ — SABİT TUTUN  {rem:F1}s";
+                    detail = "Tüfeği omuzda kıpırdatmadan bekleyin...";
+                    break;
+
+                default: // CompletedBanner
+                    accent = new Color(0.22f, 0.94f, 0.45f, 1f);
+                    title = "✓ SIFIRLAMA TAMAMLANDI!";
+                    detail = $"Mesafe: {tracker.CurrentOpticalDistanceMeters * 100f:F0} cm  —  Atışa hazır";
+                    break;
+            }
+
+            for (int i = 0; i < _views.Count; i++)
+            {
+                UiView view = _views[i];
+                if (view.CalibrationAccentBar != null)
+                    view.CalibrationAccentBar.color = accent;
+                if (view.CalibrationProgressFillImage != null)
+                    view.CalibrationProgressFillImage.color = accent;
+                if (view.CalibrationTitleText != null)
+                    view.CalibrationTitleText.text = title;
+                if (view.CalibrationDetailText != null)
+                    view.CalibrationDetailText.text = detail;
+            }
         }
 
         private static T FindChildComponent<T>(Transform root, string path) where T : Component

@@ -356,10 +356,10 @@ namespace VRAtis.Hardware
         }
 
         /// <summary>
-        /// Recenters camera horizontal yaw back toward the range forward direction
-        /// and immediately aligns the ESP32 rifle to match the head direction.
+        /// Recenters only the camera's horizontal yaw toward the range forward direction (+Z)
+        /// without restarting the optical countdown. Used when guided optical hold completes.
         /// </summary>
-        public void RecenterHeadAndRifle()
+        public void RecenterHeadYawOnly()
         {
             if (TryReadPhoneAttitude(out Quaternion worldHeadRot))
             {
@@ -383,6 +383,15 @@ namespace VRAtis.Hardware
                 _lastTargetSample = _initialForwardYaw;
                 transform.rotation = _smoothedHeadRot;
             }
+        }
+
+        /// <summary>
+        /// Recenters camera horizontal yaw back toward the range forward direction
+        /// and immediately aligns the ESP32 rifle to match the head direction.
+        /// </summary>
+        public void RecenterHeadAndRifle()
+        {
+            RecenterHeadYawOnly();
 
             if (rifleOrientationController != null)
                 rifleOrientationController.RecenterToHeadForward();

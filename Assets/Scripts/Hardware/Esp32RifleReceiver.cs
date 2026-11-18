@@ -134,6 +134,7 @@ namespace VRAtis.Hardware
             {
                 _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                 _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                _socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast, true);
                 _socket.ReceiveBufferSize = 4096;
                 _socket.ReceiveTimeout = 500;
 

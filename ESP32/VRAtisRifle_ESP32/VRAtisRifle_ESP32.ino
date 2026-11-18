@@ -6,8 +6,8 @@
 #include <string.h>
 
 // --- AĞ AYARLARI (Önce Telefon Hotspot'u arar; bulamazsa Ev Wi-Fi + PC IP'ye bağlanır) ---
-const char* HOTSPOT_SSID     = "TELEFON_HOTSPOT_ADI";     // Galaxy A26 Hotspot adın
-const char* HOTSPOT_PASSWORD = "TELEFON_SIFRESI";         // Galaxy A26 Hotspot şifren
+const char* HOTSPOT_SSID     = "YOUR_HOTSPOT_SSID";     // Galaxy A26 Hotspot adın
+const char* HOTSPOT_PASSWORD = "YOUR_WIFI_PASSWORD";         // Galaxy A26 Hotspot şifren
 
 const char* HOME_WIFI_SSID   = "YOUR_HOME_WIFI_SSID";                     // PC testi için ev modemi
 const char* HOME_WIFI_PASS   = "YOUR_WIFI_PASSWORD";
@@ -271,7 +271,10 @@ void connectBestWifi() {
     IPAddress gw = WiFi.gatewayIP();
     targetIp = (gw != IPAddress(0, 0, 0, 0)) ? gw : WiFi.broadcastIP();
   } else {
-    targetIp = HOME_PC_IP;
+    // Ev Wi-Fi ağında alt ağ yayın adresine (192.168.1.255) göndererek
+    // hem PC'nin hem de telefondaki VR uygulamasının aynı anda paket almasını sağlar
+    IPAddress bcast = WiFi.broadcastIP();
+    targetIp = (bcast != IPAddress(0, 0, 0, 0)) ? bcast : HOME_PC_IP;
   }
 
   Serial.println("\n[OK] Wi-Fi baglandi! ESP32 IP: " + WiFi.localIP().toString()

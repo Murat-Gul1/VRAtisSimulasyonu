@@ -9,7 +9,7 @@ namespace VRAtis.EditorTools
     [InitializeOnLoad]
     public static class CameraSetupTool
     {
-        private const string AutoSetupVersionKey = "VRAtis_Camera_V15_Done";
+        private const string AutoSetupVersionKey = "VRAtis_Camera_V16_Done";
 
         static CameraSetupTool()
         {
@@ -119,7 +119,7 @@ namespace VRAtis.EditorTools
                 optSo.FindProperty("ledSpacingMeters").floatValue = 0.06f;
                 optSo.FindProperty("ledOffsetFromPivotMeters").vector3Value = Vector3.zero;
                 optSo.FindProperty("readyLocalOffsetMeters").vector3Value = new Vector3(0.08f, -0.14f, 0.25f);
-                optSo.FindProperty("zDepthScale").floatValue = 0.45f;
+                optSo.FindProperty("zDepthScale").floatValue = 0.22f;
                 optSo.FindProperty("minColorDominance").intValue = 105;
                 optSo.FindProperty("minPixelBrightness").intValue = 72;
                 optSo.FindProperty("requestedWidth").intValue = 320;

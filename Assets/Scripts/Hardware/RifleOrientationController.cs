@@ -225,18 +225,41 @@ namespace VRAtis.Hardware
         /// </summary>
         public void RecenterToHeadForward()
         {
+            Transform refCam = headCameraTransform != null ? headCameraTransform : (Camera.main != null ? Camera.main.transform : null);
+            Vector3 desiredForward = _headTracker != null
+                ? (_headTracker.ReadyWorldRotation * Vector3.forward)
+                : (refCam != null ? refCam.forward : Vector3.forward);
+
             if (receiver == null || !receiver.IsConnected)
             {
                 _hasAutoZeroed = false;
+                Vector3 flatFwd = new Vector3(desiredForward.x, 0f, desiredForward.z);
+                if (flatFwd.sqrMagnitude > 1e-4f)
+                    transform.rotation = Quaternion.LookRotation(flatFwd.normalized, Vector3.up);
                 return;
             }
 
             Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
-            ApplyYawCalibration(converted);
+            ApplyYawCalibrationToDirection(converted, desiredForward);
             _lastCalibratedPacketRot = _yawCalibrationOffset * converted;
             _estimatedAngularSpeedDegPerSec = 0f;
             transform.rotation = _lastCalibratedPacketRot;
             Debug.Log("[RifleOrientationController] Tüfek yönü görüş hattına sıfırlandı.");
+        }
+
+        /// <summary>
+        /// Continuously keeps the ESP32 IMU yaw offset aligned with the camera's optical tracking forward vector
+        /// so that ESP32 and optical tracking never diverge in yaw when turning around.
+        /// </summary>
+        public void SyncYawToWorldDirection(Vector3 desiredWorldForward)
+        {
+            if (receiver == null || !receiver.IsConnected)
+                return;
+
+            Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
+            ApplyYawCalibrationToDirection(converted, desiredWorldForward);
+            _lastCalibratedPacketRot = _yawCalibrationOffset * converted;
+            _hasAutoZeroed = true;
         }
 
         private void ApplyYawCalibration(Quaternion converted)
@@ -245,6 +268,11 @@ namespace VRAtis.Hardware
             Vector3 desiredForward = _headTracker != null
                 ? (_headTracker.ReadyWorldRotation * Vector3.forward)
                 : (refCam != null ? refCam.forward : Vector3.forward);
+            ApplyYawCalibrationToDirection(converted, desiredForward);
+        }
+
+        private void ApplyYawCalibrationToDirection(Quaternion converted, Vector3 desiredForward)
+        {
             Vector3 flatDesiredForward = new Vector3(desiredForward.x, 0f, desiredForward.z);
             if (flatDesiredForward.sqrMagnitude < 1e-4f)
                 flatDesiredForward = Vector3.forward;

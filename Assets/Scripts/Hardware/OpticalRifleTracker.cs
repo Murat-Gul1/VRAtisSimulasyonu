@@ -32,6 +32,15 @@ namespace VRAtis.Hardware
             LongitudinalRail = 2
         }
 
+        public enum CalibrationPhase
+        {
+            Idle = 0,
+            PreparingHeadset = 1,
+            WaitingForLeds = 2,
+            HoldingSteady = 3,
+            CompletedBanner = 4
+        }
+
         private struct BlobCandidate
         {
             public float CenterX;
@@ -81,9 +90,9 @@ namespace VRAtis.Hardware
         [Range(0.5f, 2.0f)]
         [SerializeField] private float positionScale = 1.0f;
 
-        [Tooltip("İleri-geri (Z) derinlik hassasiyeti çarpanı. Tek kamera piksel gürültüsünde ileri sıçramaları önlemek için 0.45 önerilir.")]
+        [Tooltip("İleri-geri (Z) derinlik hassasiyeti çarpanı. Tek kamera piksel gürültüsünde ileri sıçramaları önlemek için 0.22 önerilir.")]
         [Range(0.0f, 1.5f)]
-        [SerializeField] private float zDepthScale = 0.45f;
+        [SerializeField] private float zDepthScale = 0.22f;
 
         [Header("Kamera Çözünürlüğü (320x240 Düşük Yük / Akıcı Takip)")]
         [SerializeField] private int requestedWidth = 320;
@@ -107,6 +116,15 @@ namespace VRAtis.Hardware
         [Range(0.06f, 0.25f)]
         [SerializeField] private float redDotWakeLateralMeters = 0.15f;
 
+        [Header("Kılavuzlu Sıfırlama Zamanlayıcıları")]
+        [Tooltip("2 parmak dokunuşu sonrası telefonu VR kutusuna takıp tüfeği omuzlamak için bekleme süresi (saniye).")]
+        [Range(0f, 10f)]
+        [SerializeField] private float vrInsertGraceSeconds = 5.0f;
+        [Tooltip("LED'ler görüldükten sonra sıfır kilitlemek için tüfeği sabit tutma süresi (saniye).")]
+        [Range(0.4f, 4.0f)]
+        [SerializeField] private float steadyHoldSeconds = 1.5f;
+        [SerializeField] private float completedBannerDurationSeconds = 2.0f;
+
         // Public status properties for Settings UI & WeaponAimController
         public bool IsOpticalTrackingEnabled
         {
@@ -117,9 +135,16 @@ namespace VRAtis.Hardware
                     return;
                 enableOpticalTracking = value;
                 if (value)
+                {
                     TryStartCamera();
+                    if (!_hasCalibratedZero && IsTrackingRuntimeSupported)
+                        _calibrationPhase = CalibrationPhase.WaitingForLeds;
+                }
                 else
+                {
                     StopCamera();
+                    _calibrationPhase = CalibrationPhase.Idle;
+                }
             }
         }
 
@@ -167,10 +192,49 @@ namespace VRAtis.Hardware
             set => minColorDominance = Mathf.Clamp(value, 15, 150);
         }
 
+        public bool IsTrackingRuntimeSupported => enableOpticalTracking && (Application.isMobilePlatform || runWebcamInEditor);
         public bool IsCameraRunning => _webCamTex != null && _webCamTex.isPlaying;
-        public bool IsActivelyTrackingPosition => enableOpticalTracking && IsCameraRunning && _hasStableLock;
+        public bool IsActivelyTrackingPosition => enableOpticalTracking && IsCameraRunning && _hasStableLock && _hasCalibratedZero;
         public bool IsLedAFound { get; private set; }
         public bool IsLedBFound { get; private set; }
+        public bool HasCalibratedZero => _hasCalibratedZero;
+        public CalibrationPhase CurrentCalibrationPhase => IsTrackingRuntimeSupported ? _calibrationPhase : CalibrationPhase.Idle;
+        public float CalibrationRemainingSeconds
+        {
+            get
+            {
+                switch (_calibrationPhase)
+                {
+                    case CalibrationPhase.PreparingHeadset:
+                        return Mathf.Max(0f, _calPhaseTimer);
+                    case CalibrationPhase.HoldingSteady:
+                        return Mathf.Max(0f, steadyHoldSeconds - _steadyHoldTimer);
+                    case CalibrationPhase.CompletedBanner:
+                        return Mathf.Max(0f, _calPhaseTimer);
+                    default:
+                        return 0f;
+                }
+            }
+        }
+        public float CalibrationProgress01
+        {
+            get
+            {
+                switch (_calibrationPhase)
+                {
+                    case CalibrationPhase.PreparingHeadset:
+                        return vrInsertGraceSeconds > 0.01f ? Mathf.Clamp01(_calPhaseTimer / vrInsertGraceSeconds) : 0f;
+                    case CalibrationPhase.WaitingForLeds:
+                        return 0f;
+                    case CalibrationPhase.HoldingSteady:
+                        return steadyHoldSeconds > 0.01f ? Mathf.Clamp01(_steadyHoldTimer / steadyHoldSeconds) : 1f;
+                    case CalibrationPhase.CompletedBanner:
+                        return 1f;
+                    default:
+                        return 0f;
+                }
+            }
+        }
         public float CurrentOpticalDistanceMeters { get; private set; }
         public float LastPixelSeparation { get; private set; }
         public string ActiveCameraDeviceName { get; private set; } = string.Empty;
@@ -250,10 +314,13 @@ namespace VRAtis.Hardware
         private volatile bool _previewDirty;
 
         // Calibration & 120Hz smoothing state
+        private CalibrationPhase _calibrationPhase = CalibrationPhase.Idle;
+        private float _calPhaseTimer;
+        private float _steadyHoldTimer;
+        private float _steadyLostSeconds;
         private bool _hasCalibratedZero;
         private bool _pendingZeroCapture;
         private int _zeroAvgCount;
-        private int _startupSteadyCount;
         private Vector3 _startupCandidateRawPos;
         private float _reacquireRampTimer;
         private Vector3 _zeroRawCamPos;
@@ -273,6 +340,8 @@ namespace VRAtis.Hardware
         private float _fallbackRefRifleYaw;
         private float _fallbackRefBodyYaw;
         private Vector3 _fallbackRelBodyOffset;
+        private HeadTrackingCameraController _headTracker;
+        private RifleOrientationController _rifleOrientationController;
         private float _androidPermRetryTimer;
         private bool _permissionRequestedOnce;
 
@@ -293,11 +362,17 @@ namespace VRAtis.Hardware
             if (rifleReceiver == null)
                 rifleReceiver = FindAnyObjectByType<Esp32RifleReceiver>();
 
+            _headTracker = FindAnyObjectByType<HeadTrackingCameraController>();
+            _rifleOrientationController = GetComponent<RifleOrientationController>();
+            if (_rifleOrientationController == null)
+                _rifleOrientationController = FindAnyObjectByType<RifleOrientationController>();
+
             _currentCamLocalOffset = readyLocalOffsetMeters;
             _smoothedLocalOffset = readyLocalOffsetMeters;
             _zeroTargetCamLocalOffset = readyLocalOffsetMeters;
             _fallbackRelBodyOffset = readyLocalOffsetMeters;
             _smoothedWorldPos = transform.position;
+            _calibrationPhase = IsTrackingRuntimeSupported ? CalibrationPhase.WaitingForLeds : CalibrationPhase.Idle;
         }
 
         private void OnEnable()
@@ -331,9 +406,9 @@ namespace VRAtis.Hardware
 
         /// <summary>
         /// Zeroes the optical tracker so the rifle's current physical position matches Ready stance
-        /// (or current calibrated offset relative to head camera), eliminating ruler measurement error.
+        /// (or starts a guided VR-insert + steady-aim countdown when triggered outside Settings menu).
         /// </summary>
-        public void RecenterOpticalZero()
+        public void RecenterOpticalZero(bool startGuidedCountdown = true)
         {
             if (headCameraTransform != null)
             {
@@ -346,12 +421,17 @@ namespace VRAtis.Hardware
             }
 
             _spikeRejectCount = 0;
-            _startupSteadyCount = 0;
             _hasFallbackRef = false;
             _fallbackRelBodyOffset = readyLocalOffsetMeters;
             _resetWorkerContinuity = true;
 
-            if (_hasStableLock)
+            if (!IsTrackingRuntimeSupported)
+            {
+                _calibrationPhase = CalibrationPhase.Idle;
+                return;
+            }
+
+            if (!startGuidedCountdown && _hasStableLock)
             {
                 lock (_resultLock)
                 {
@@ -365,16 +445,32 @@ namespace VRAtis.Hardware
                 _smoothedLocalOffset = readyLocalOffsetMeters;
                 _hasCalibratedZero = true;
                 _pendingZeroCapture = false;
+                _calibrationPhase = CalibrationPhase.CompletedBanner;
+                _calPhaseTimer = completedBannerDurationSeconds;
             }
             else
             {
-                _pendingZeroCapture = true;
+                _pendingZeroCapture = false;
                 _zeroAvgCount = 0;
+                _steadyHoldTimer = 0f;
+                _steadyLostSeconds = 0f;
                 _hasCalibratedZero = false;
+                _hasStableLock = false;
                 _hasLastAcceptedRaw = false;
                 _currentCamLocalOffset = readyLocalOffsetMeters;
                 _smoothedLocalOffset = readyLocalOffsetMeters;
                 _posInitialized = false;
+
+                if (startGuidedCountdown && vrInsertGraceSeconds > 0.1f)
+                {
+                    _calibrationPhase = CalibrationPhase.PreparingHeadset;
+                    _calPhaseTimer = vrInsertGraceSeconds;
+                }
+                else
+                {
+                    _calibrationPhase = CalibrationPhase.WaitingForLeds;
+                    _calPhaseTimer = 0f;
+                }
             }
         }
 
@@ -500,6 +596,28 @@ namespace VRAtis.Hardware
 
             float dt = Mathf.Clamp(Time.unscaledDeltaTime, 0.001f, 0.05f);
 
+            if (!enableOpticalTracking)
+            {
+                _calibrationPhase = CalibrationPhase.Idle;
+            }
+            else if (_calibrationPhase == CalibrationPhase.PreparingHeadset)
+            {
+                _calPhaseTimer = Mathf.Max(0f, _calPhaseTimer - dt);
+                if (_calPhaseTimer <= 0f)
+                {
+                    _calibrationPhase = CalibrationPhase.WaitingForLeds;
+                    _steadyHoldTimer = 0f;
+                    _steadyLostSeconds = 0f;
+                    _zeroAvgCount = 0;
+                }
+            }
+            else if (_calibrationPhase == CalibrationPhase.CompletedBanner)
+            {
+                _calPhaseTimer = Mathf.Max(0f, _calPhaseTimer - dt);
+                if (_calPhaseTimer <= 0f)
+                    _calibrationPhase = CalibrationPhase.Idle;
+            }
+
             Vector3 rFwd = new Vector3(transform.forward.x, 0f, transform.forward.z);
             bool hasRifleYaw = rifleReceiver != null && rifleReceiver.IsConnected && rFwd.sqrMagnitude > 1e-4f;
             float rifleFlatYawDeg = hasRifleYaw ? Mathf.Atan2(rFwd.x, rFwd.z) * Mathf.Rad2Deg : 0f;
@@ -529,72 +647,86 @@ namespace VRAtis.Hardware
                     CurrentOpticalDistanceMeters = distMeters;
                     LastPixelSeparation = sepPxCopy;
 
-                    if (_pendingZeroCapture)
+                    if (_calibrationPhase == CalibrationPhase.PreparingHeadset)
+                    {
+                        // Grace period while user slides phone into VR goggles & shoulders rifle:
+                        // do not lock optical zero or enable head-locked tracking yet.
+                        _hasStableLock = false;
+                    }
+                    else if (_pendingZeroCapture)
                     {
                         _zeroRawCamPos = rawCamPos;
                         _zeroTargetCamLocalOffset = readyLocalOffsetMeters;
                         _zeroAvgCount = 1;
-                        _startupSteadyCount = 6;
                         _hasCalibratedZero = true;
                         _pendingZeroCapture = false;
+                        _calibrationPhase = CalibrationPhase.CompletedBanner;
+                        _calPhaseTimer = completedBannerDurationSeconds;
                     }
                     else if (!_hasCalibratedZero)
                     {
-                        // Initial startup auto-zero: wait until LEDs are held steady for 6 camera frames
-                        // so putting on the headset or lifting the rifle at launch doesn't lock a mid-motion pose.
-                        if (_startupSteadyCount == 0 || Vector3.Distance(rawCamPos, _startupCandidateRawPos) > 0.035f)
+                        if (_calibrationPhase != CalibrationPhase.HoldingSteady)
                         {
+                            _calibrationPhase = CalibrationPhase.HoldingSteady;
                             _startupCandidateRawPos = rawCamPos;
-                            _startupSteadyCount = 1;
+                            _zeroAvgCount = 1;
+                            _steadyHoldTimer = 0f;
+                            _steadyLostSeconds = 0f;
                         }
                         else
                         {
-                            _startupSteadyCount++;
-                            _startupCandidateRawPos = Vector3.Lerp(_startupCandidateRawPos, rawCamPos, 1f / _startupSteadyCount);
-                            if (_startupSteadyCount >= 6)
+                            float dx = rawCamPos.x - _startupCandidateRawPos.x;
+                            float dy = rawCamPos.y - _startupCandidateRawPos.y;
+                            float dLat = Mathf.Sqrt(dx * dx + dy * dy);
+                            float dZ = Mathf.Abs(rawCamPos.z - _startupCandidateRawPos.z);
+                            if (dLat > 0.048f || dZ > 0.10f)
                             {
-                                _zeroRawCamPos = _startupCandidateRawPos;
-                                _zeroTargetCamLocalOffset = readyLocalOffsetMeters;
-                                _zeroAvgCount = 4;
-                                _hasCalibratedZero = true;
+                                // Rifle moved noticeably while getting into shoulder stance: restart hold timer cleanly
+                                _startupCandidateRawPos = rawCamPos;
+                                _zeroAvgCount = 1;
+                                _steadyHoldTimer = 0f;
+                            }
+                            else
+                            {
+                                _zeroAvgCount++;
+                                _startupCandidateRawPos = Vector3.Lerp(_startupCandidateRawPos, rawCamPos, 1f / Mathf.Min(_zeroAvgCount, 12));
                             }
                         }
-                    }
-                    else if (_zeroAvgCount > 0 && _zeroAvgCount < 8 && Vector3.Distance(rawCamPos, _zeroRawCamPos) < 0.045f)
-                    {
-                        _zeroAvgCount++;
-                        _zeroRawCamPos = Vector3.Lerp(_zeroRawCamPos, rawCamPos, 1f / _zeroAvgCount);
-                    }
 
-                    bool wasLocked = _hasStableLock;
-
-                    Vector3 desiredLocal;
-                    if (!_hasCalibratedZero)
-                    {
-                        desiredLocal = readyLocalOffsetMeters;
+                        _currentCamLocalOffset = readyLocalOffsetMeters;
+                        _hasStableLock = false;
                     }
                     else
                     {
+                        if (_zeroAvgCount > 0 && _zeroAvgCount < 8 && Vector3.Distance(rawCamPos, _zeroRawCamPos) < 0.045f)
+                        {
+                            _zeroAvgCount++;
+                            _zeroRawCamPos = Vector3.Lerp(_zeroRawCamPos, rawCamPos, 1f / _zeroAvgCount);
+                        }
+
+                        bool wasLocked = _hasStableLock;
+
                         // Gentle depth-ratio parallax compensation without magnifying tiny pixel jitter
-                        float lateralRatio = Mathf.Clamp(_zeroTargetCamLocalOffset.z / Mathf.Max(0.24f, _zeroRawCamPos.z), 0.85f, 1.30f);
+                        float lateralRatio = Mathf.Clamp(_zeroTargetCamLocalOffset.z / Mathf.Max(0.24f, _zeroRawCamPos.z), 0.60f, 1.30f);
                         Vector3 deltaCam = rawCamPos - _zeroRawCamPos;
-                        float zDelta = Mathf.Clamp(deltaCam.z * zDepthScale * positionScale, -0.16f, 0.16f);
-                        desiredLocal = new Vector3(
+                        float deadbandedZ = Mathf.MoveTowards(deltaCam.z, 0f, 0.015f);
+                        float zDelta = Mathf.Clamp(deadbandedZ * zDepthScale * positionScale, -0.07f, 0.07f);
+                        Vector3 desiredLocal = new Vector3(
                             _zeroTargetCamLocalOffset.x + deltaCam.x * lateralRatio * positionScale,
                             _zeroTargetCamLocalOffset.y + deltaCam.y * lateralRatio * positionScale,
                             _zeroTargetCamLocalOffset.z + zDelta);
+
+                        // Keep tracking inside plausible arm-reach bounds so occasional glare cannot throw rifle away
+                        desiredLocal.x = Mathf.Clamp(desiredLocal.x, -0.75f, 0.75f);
+                        desiredLocal.y = Mathf.Clamp(desiredLocal.y, -0.75f, 0.55f);
+                        desiredLocal.z = Mathf.Clamp(desiredLocal.z, 0.14f, 1.35f);
+
+                        _currentCamLocalOffset = desiredLocal;
+                        _hasStableLock = true;
+                        _hasFallbackRef = false;
+                        if (!wasLocked)
+                            _reacquireRampTimer = 0.25f;
                     }
-
-                    // Keep tracking inside plausible arm-reach bounds so occasional glare cannot throw rifle away
-                    desiredLocal.x = Mathf.Clamp(desiredLocal.x, -0.75f, 0.75f);
-                    desiredLocal.y = Mathf.Clamp(desiredLocal.y, -0.75f, 0.55f);
-                    desiredLocal.z = Mathf.Clamp(desiredLocal.z, 0.14f, 1.35f);
-
-                    _currentCamLocalOffset = desiredLocal;
-                    _hasStableLock = true;
-                    _hasFallbackRef = false;
-                    if (!wasLocked)
-                        _reacquireRampTimer = 0.25f;
                 }
             }
             else if (enableOpticalTracking && IsCameraRunning)
@@ -608,6 +740,54 @@ namespace VRAtis.Hardware
             {
                 _unseenSeconds = 99f;
                 _hasStableLock = false;
+            }
+
+            if (enableOpticalTracking && _calibrationPhase == CalibrationPhase.HoldingSteady)
+            {
+                if (_unseenSeconds <= 0.12f)
+                {
+                    _steadyLostSeconds = 0f;
+                    _steadyHoldTimer += dt;
+                    if (_steadyHoldTimer >= steadyHoldSeconds)
+                    {
+                        if (_headTracker != null)
+                        {
+                            _headTracker.RecenterHeadYawOnly();
+                            Vector3 reFwd = new Vector3(headCameraTransform.forward.x, 0f, headCameraTransform.forward.z);
+                            if (reFwd.sqrMagnitude > 1e-4f)
+                                camFlatYawDeg = Mathf.Atan2(reFwd.x, reFwd.z) * Mathf.Rad2Deg;
+                        }
+
+                        _zeroRawCamPos = _startupCandidateRawPos;
+                        _zeroTargetCamLocalOffset = readyLocalOffsetMeters;
+                        _lastAcceptedRawCamPos = _zeroRawCamPos;
+                        _hasLastAcceptedRaw = true;
+                        _hasCalibratedZero = true;
+                        _hasStableLock = true;
+                        _hasFallbackRef = false;
+                        _bodyYawDeg = camFlatYawDeg;
+                        _bodyYawInitialized = true;
+                        _currentCamLocalOffset = readyLocalOffsetMeters;
+                        _smoothedLocalOffset = readyLocalOffsetMeters;
+                        _posInitialized = true;
+                        _reacquireRampTimer = 0.25f;
+                        _calibrationPhase = CalibrationPhase.CompletedBanner;
+                        _calPhaseTimer = completedBannerDurationSeconds;
+
+                        if (_rifleOrientationController != null)
+                            _rifleOrientationController.RecenterToHeadForward();
+                    }
+                }
+                else
+                {
+                    _steadyLostSeconds += dt;
+                    if (_steadyLostSeconds > 0.35f)
+                    {
+                        _calibrationPhase = CalibrationPhase.WaitingForLeds;
+                        _steadyHoldTimer = 0f;
+                        _zeroAvgCount = 0;
+                    }
+                }
             }
 
             if (_hasStableLock)
@@ -975,14 +1155,18 @@ namespace VRAtis.Hardware
                 }
                 else
                 {
-                    // Rate-limit single-frame sepPx glitches (+-12% max) instead of bypassing filter on spikes
-                    float limitedSep = Mathf.Clamp(rawSepPx, _filteredSepPx * 0.88f, _filteredSepPx * 1.12f);
-                    _filteredSepPx = Mathf.Lerp(_filteredSepPx, limitedSep, 0.22f);
+                    float sepDiff = Mathf.Abs(rawSepPx - _filteredSepPx);
+                    if (sepDiff > 1.35f)
+                    {
+                        // Rate-limit single-frame sepPx glitches (+-4% max) and apply deadband so halo breathing cannot cause Z jumps
+                        float limitedSep = Mathf.Clamp(rawSepPx, _filteredSepPx * 0.96f, _filteredSepPx * 1.04f);
+                        _filteredSepPx = Mathf.Lerp(_filteredSepPx, limitedSep, 0.15f);
+                    }
                 }
 
                 _prevA = new Vector2(blobA.CenterX, blobA.CenterY);
                 _prevB = new Vector2(blobB.CenterX, blobB.CenterY);
-                _prevSepPx = rawSepPx;
+                _prevSepPx = _filteredSepPx;
                 _hasPrevPixels = true;
                 _workerMissedFrames = 0;
 
@@ -1292,7 +1476,7 @@ namespace VRAtis.Hardware
             float bestScore = float.NegativeInfinity;
 
             float linearScale = Mathf.Max(1f, w / 320f);
-            float minSepPx = 4f * linearScale;
+            float minSepPx = 15f * linearScale;
             int countA = _candidatesA.Count;
             int countB = dualSameColor ? countA : _candidatesB.Count;
 
@@ -1429,9 +1613,9 @@ namespace VRAtis.Hardware
 
             float xMeters = rightNorm * imgWidthMetric;
             float yMeters = upNorm * imgHeightMetric;
-            ledDistanceMeters = zMeters;
+            ledDistanceMeters = _filteredProjDepthMeters;
 
-            Vector3 ledCamPos = new Vector3(xMeters, yMeters, zMeters);
+            Vector3 ledCamPos = new Vector3(xMeters, yMeters, _filteredProjDepthMeters);
             if (_snapLedOffsetFromPivot.sqrMagnitude > 1e-6f)
             {
                 Vector3 camPivotOffset = Quaternion.Inverse(_snapCamRot) * (_snapRifleRot * _snapLedOffsetFromPivot);
