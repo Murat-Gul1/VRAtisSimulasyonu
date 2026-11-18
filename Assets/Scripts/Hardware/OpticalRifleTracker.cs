@@ -112,7 +112,7 @@ namespace VRAtis.Hardware
         [Range(15f, 90f)]
         [SerializeField] private float maxPositionSmoothSpeed = 38f;
         [SerializeField] private float maxSingleFrameJumpMeters = 0.18f;
-        [SerializeField] private bool autoPowerRedDotNearEye = true;
+        [SerializeField] private bool autoPowerRedDotNearEye = false;
         [Range(0.06f, 0.25f)]
         [SerializeField] private float redDotWakeLateralMeters = 0.15f;
 
@@ -121,8 +121,8 @@ namespace VRAtis.Hardware
         [Range(0f, 10f)]
         [SerializeField] private float vrInsertGraceSeconds = 5.0f;
         [Tooltip("LED'ler görüldükten sonra sıfır kilitlemek için tüfeği sabit tutma süresi (saniye).")]
-        [Range(0.4f, 4.0f)]
-        [SerializeField] private float steadyHoldSeconds = 1.5f;
+        [Range(0.4f, 10.0f)]
+        [SerializeField] private float steadyHoldSeconds = 5.0f;
         [SerializeField] private float completedBannerDurationSeconds = 2.0f;
 
         // Public status properties for Settings UI & WeaponAimController
@@ -247,6 +247,12 @@ namespace VRAtis.Hardware
         public int CameraRotationAngle { get; private set; }
         public bool CameraMirrored { get; private set; }
         public Texture DebugPreviewTexture => _previewTex;
+
+        public bool TryGetSmoothedWorldPos(out Vector3 worldPos)
+        {
+            worldPos = _smoothedWorldPos;
+            return _posInitialized;
+        }
 
         // Webcam & background worker state
         private WebCamTexture _webCamTex;
@@ -515,6 +521,8 @@ namespace VRAtis.Hardware
                     _snapCamRot = headCameraTransform != null ? headCameraTransform.rotation : Quaternion.identity;
                     _snapRifleRot = transform.rotation;
                     int rawAngle = _webCamTex.videoRotationAngle;
+                    if (_headTracker != null && _headTracker.IsRoll180Compensated)
+                        rawAngle = (rawAngle + 180) % 360;
                     if (flipCamera180Override)
                         rawAngle = (rawAngle + 180) % 360;
                     _snapVideoAngle = rawAngle;
@@ -679,7 +687,7 @@ namespace VRAtis.Hardware
                             float dy = rawCamPos.y - _startupCandidateRawPos.y;
                             float dLat = Mathf.Sqrt(dx * dx + dy * dy);
                             float dZ = Mathf.Abs(rawCamPos.z - _startupCandidateRawPos.z);
-                            if (dLat > 0.048f || dZ > 0.10f)
+                            if (dLat > 0.055f || dZ > 0.12f)
                             {
                                 // Rifle moved noticeably while getting into shoulder stance: restart hold timer cleanly
                                 _startupCandidateRawPos = rawCamPos;
@@ -689,7 +697,7 @@ namespace VRAtis.Hardware
                             else
                             {
                                 _zeroAvgCount++;
-                                _startupCandidateRawPos = Vector3.Lerp(_startupCandidateRawPos, rawCamPos, 1f / Mathf.Min(_zeroAvgCount, 12));
+                                _startupCandidateRawPos = Vector3.Lerp(_startupCandidateRawPos, rawCamPos, 1f / Mathf.Min(_zeroAvgCount, 24));
                             }
                         }
 
@@ -706,20 +714,22 @@ namespace VRAtis.Hardware
 
                         bool wasLocked = _hasStableLock;
 
-                        // Gentle depth-ratio parallax compensation without magnifying tiny pixel jitter
+                        // Full 1:1 depth-ratio parallax compensation so pure head rotation cancels out in world space
                         float lateralRatio = Mathf.Clamp(_zeroTargetCamLocalOffset.z / Mathf.Max(0.24f, _zeroRawCamPos.z), 0.60f, 1.30f);
                         Vector3 deltaCam = rawCamPos - _zeroRawCamPos;
+                        float deadX = Mathf.MoveTowards(deltaCam.x, 0f, 0.003f);
+                        float deadY = Mathf.MoveTowards(deltaCam.y, 0f, 0.003f);
                         float deadbandedZ = Mathf.MoveTowards(deltaCam.z, 0f, 0.015f);
-                        float zDelta = Mathf.Clamp(deadbandedZ * zDepthScale * positionScale, -0.07f, 0.07f);
+                        float zDelta = Mathf.Clamp(deadbandedZ * zDepthScale * positionScale, -0.06f, 0.06f);
                         Vector3 desiredLocal = new Vector3(
-                            _zeroTargetCamLocalOffset.x + deltaCam.x * lateralRatio * positionScale,
-                            _zeroTargetCamLocalOffset.y + deltaCam.y * lateralRatio * positionScale,
+                            _zeroTargetCamLocalOffset.x + deadX * lateralRatio * positionScale,
+                            _zeroTargetCamLocalOffset.y + deadY * lateralRatio * positionScale,
                             _zeroTargetCamLocalOffset.z + zDelta);
 
-                        // Keep tracking inside plausible arm-reach bounds so occasional glare cannot throw rifle away
-                        desiredLocal.x = Mathf.Clamp(desiredLocal.x, -0.75f, 0.75f);
-                        desiredLocal.y = Mathf.Clamp(desiredLocal.y, -0.75f, 0.55f);
-                        desiredLocal.z = Mathf.Clamp(desiredLocal.z, 0.14f, 1.35f);
+                        // Keep tracking inside realistic shouldered bounds so the rifle cannot slide off-screen
+                        desiredLocal.x = Mathf.Clamp(desiredLocal.x, readyLocalOffsetMeters.x - 0.18f, readyLocalOffsetMeters.x + 0.18f);
+                        desiredLocal.y = Mathf.Clamp(desiredLocal.y, readyLocalOffsetMeters.y - 0.18f, readyLocalOffsetMeters.y + 0.18f);
+                        desiredLocal.z = Mathf.Clamp(desiredLocal.z, readyLocalOffsetMeters.z - 0.06f, readyLocalOffsetMeters.z + 0.06f);
 
                         _currentCamLocalOffset = desiredLocal;
                         _hasStableLock = true;
@@ -790,6 +800,8 @@ namespace VRAtis.Hardware
                 }
             }
 
+            Vector3 headOrigin = _headTracker != null ? _headTracker.ReadyWorldPosition : headCameraTransform.position;
+
             if (_hasStableLock)
             {
                 if (!_posInitialized)
@@ -823,11 +835,11 @@ namespace VRAtis.Hardware
                     _smoothedLocalOffset.z = Mathf.Lerp(_smoothedLocalOffset.z, _currentCamLocalOffset.z, blendZ);
                 }
 
-                _smoothedWorldPos = headCameraTransform.TransformPoint(_smoothedLocalOffset);
+                _smoothedWorldPos = headOrigin + headCameraTransform.rotation * _smoothedLocalOffset;
             }
             else if (enableBodyYawFollowFallback)
             {
-                Vector3 targetWorldPos = ComputeBodyYawFallbackWorldPos(dt, hasRifleYaw, rifleFlatYawDeg, camFlatYawDeg);
+                Vector3 targetWorldPos = ComputeBodyYawFallbackWorldPos(headOrigin, hasRifleYaw, rifleFlatYawDeg, camFlatYawDeg);
                 if (!_posInitialized)
                 {
                     _smoothedWorldPos = targetWorldPos;
@@ -844,7 +856,7 @@ namespace VRAtis.Hardware
                     // Hold exact last position when neither LEDs nor ESP32 yaw moved
                     _smoothedWorldPos = targetWorldPos;
                 }
-                _smoothedLocalOffset = headCameraTransform.InverseTransformPoint(_smoothedWorldPos);
+                _smoothedLocalOffset = Quaternion.Inverse(headCameraTransform.rotation) * (_smoothedWorldPos - headOrigin);
             }
             else
             {
@@ -857,7 +869,7 @@ namespace VRAtis.Hardware
             UpdateAutoRedDotNearEye();
         }
 
-        private Vector3 ComputeBodyYawFallbackWorldPos(float dt, bool hasRifleYaw, float rifleFlatYawDeg, float camFlatYawDeg)
+        private Vector3 ComputeBodyYawFallbackWorldPos(Vector3 headOrigin, bool hasRifleYaw, float rifleFlatYawDeg, float camFlatYawDeg)
         {
             if (hasRifleYaw)
             {
@@ -868,7 +880,7 @@ namespace VRAtis.Hardware
                     _fallbackRefBodyYaw = camFlatYawDeg;
                     if (_posInitialized)
                     {
-                        Vector3 relWorld = _smoothedWorldPos - headCameraTransform.position;
+                        Vector3 relWorld = _smoothedWorldPos - headOrigin;
                         _fallbackRelBodyOffset = Quaternion.Inverse(Quaternion.Euler(0f, camFlatYawDeg, 0f)) * relWorld;
                     }
                     else
@@ -882,7 +894,7 @@ namespace VRAtis.Hardware
                 _bodyYawInitialized = true;
                 _currentCamLocalOffset = _fallbackRelBodyOffset;
 
-                return headCameraTransform.position + Quaternion.Euler(0f, _bodyYawDeg, 0f) * _fallbackRelBodyOffset;
+                return headOrigin + Quaternion.Euler(0f, _bodyYawDeg, 0f) * _fallbackRelBodyOffset;
             }
 
             _hasFallbackRef = false;
@@ -892,7 +904,7 @@ namespace VRAtis.Hardware
             _bodyYawDeg = camFlatYawDeg;
             _bodyYawInitialized = true;
             _currentCamLocalOffset = readyLocalOffsetMeters;
-            return headCameraTransform.position + Quaternion.Euler(0f, _bodyYawDeg, 0f) * readyLocalOffsetMeters;
+            return headOrigin + Quaternion.Euler(0f, _bodyYawDeg, 0f) * readyLocalOffsetMeters;
         }
 
         private void UpdateAutoRedDotNearEye()

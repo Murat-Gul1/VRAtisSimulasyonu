@@ -73,6 +73,7 @@ namespace VRAtis.Hardware
         private static readonly Quaternion VerticalMountRotation = Quaternion.Euler(90f, 0f, 0f);
 
         private Quaternion _yawCalibrationOffset = Quaternion.identity;
+        private Quaternion _localPitchCalibrationOffset = Quaternion.identity;
         private bool _hasAutoZeroed;
         private HeadTrackingCameraController _headTracker;
 
@@ -128,7 +129,7 @@ namespace VRAtis.Hardware
             {
                 _hasAutoZeroed = true;
                 ApplyYawCalibration(converted);
-                Quaternion initialRot = _yawCalibrationOffset * converted;
+                Quaternion initialRot = ApplyCalibrationOffsets(converted);
                 _lastCalibratedPacketRot = initialRot;
                 _lastPacketSeq = receiver.PacketSequence;
                 _elapsedSinceLastDistinctPacket = 0f;
@@ -136,7 +137,7 @@ namespace VRAtis.Hardware
                 return;
             }
 
-            Quaternion calibratedPacketRot = _yawCalibrationOffset * converted;
+            Quaternion calibratedPacketRot = ApplyCalibrationOffsets(converted);
 
             // Update angular velocity estimate when a new distinct packet arrives
             if (receiver.PacketSequence != _lastPacketSeq)
@@ -220,8 +221,8 @@ namespace VRAtis.Hardware
         }
 
         /// <summary>
-        /// Aligns the rifle's horizontal forward direction with the headset's current forward direction
-        /// while keeping true gravity-referenced Pitch and Roll untouched.
+        /// Aligns the rifle's horizontal forward direction (Yaw) with the headset's current forward direction
+        /// while keeping true gravity-referenced Pitch and Roll completely faithful to the real rifle.
         /// </summary>
         public void RecenterToHeadForward()
         {
@@ -241,15 +242,41 @@ namespace VRAtis.Hardware
 
             Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
             ApplyYawCalibrationToDirection(converted, desiredForward);
-            _lastCalibratedPacketRot = _yawCalibrationOffset * converted;
+            _hasAutoZeroed = true;
+            _lastCalibratedPacketRot = ApplyCalibrationOffsets(converted);
             _estimatedAngularSpeedDegPerSec = 0f;
             transform.rotation = _lastCalibratedPacketRot;
-            Debug.Log("[RifleOrientationController] Tüfek yönü görüş hattına sıfırlandı.");
+            Debug.Log("[RifleOrientationController] Tüfek yatay yönü (Yaw) görüş hattına sıfırlandı; dikey eğim gerçek yerçekimine bağlı korundu.");
         }
 
         /// <summary>
-        /// Continuously keeps the ESP32 IMU yaw offset aligned with the camera's optical tracking forward vector
-        /// so that ESP32 and optical tracking never diverge in yaw when turning around.
+        /// Smoothly slerps the rifle's pitch and yaw calibration offsets toward the headset's current forward
+        /// direction so sustained shoulder aiming never drifts off-center from the Red Dot reticle.
+        /// </summary>
+        public void SoftAlignToHeadForward(float blend01)
+        {
+            if (receiver == null || !receiver.IsConnected)
+                return;
+
+            float t = Mathf.Clamp01(blend01);
+            if (t <= 0f)
+                return;
+
+            Transform refCam = headCameraTransform != null ? headCameraTransform : (Camera.main != null ? Camera.main.transform : null);
+            Vector3 desiredForward = _headTracker != null
+                ? (_headTracker.ReadyWorldRotation * Vector3.forward)
+                : (refCam != null ? refCam.forward : Vector3.forward);
+
+            Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
+            ComputeCalibrationOffsets(converted, desiredForward, out Quaternion targetYawOffset, out Quaternion targetPitchOffset);
+
+            _yawCalibrationOffset = Quaternion.Slerp(_yawCalibrationOffset, targetYawOffset, t);
+            _localPitchCalibrationOffset = Quaternion.Slerp(_localPitchCalibrationOffset, targetPitchOffset, t);
+            _hasAutoZeroed = true;
+        }
+
+        /// <summary>
+        /// Continuously keeps the ESP32 IMU calibration aligned with the given world forward vector.
         /// </summary>
         public void SyncYawToWorldDirection(Vector3 desiredWorldForward)
         {
@@ -258,8 +285,13 @@ namespace VRAtis.Hardware
 
             Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
             ApplyYawCalibrationToDirection(converted, desiredWorldForward);
-            _lastCalibratedPacketRot = _yawCalibrationOffset * converted;
+            _lastCalibratedPacketRot = ApplyCalibrationOffsets(converted);
             _hasAutoZeroed = true;
+        }
+
+        private Quaternion ApplyCalibrationOffsets(Quaternion converted)
+        {
+            return _yawCalibrationOffset * (converted * _localPitchCalibrationOffset);
         }
 
         private void ApplyYawCalibration(Quaternion converted)
@@ -273,17 +305,33 @@ namespace VRAtis.Hardware
 
         private void ApplyYawCalibrationToDirection(Quaternion converted, Vector3 desiredForward)
         {
-            Vector3 flatDesiredForward = new Vector3(desiredForward.x, 0f, desiredForward.z);
-            if (flatDesiredForward.sqrMagnitude < 1e-4f)
-                flatDesiredForward = Vector3.forward;
+            ComputeCalibrationOffsets(converted, desiredForward, out _yawCalibrationOffset, out _localPitchCalibrationOffset);
+        }
+
+        private static void ComputeCalibrationOffsets(
+            Quaternion converted,
+            Vector3 desiredForward,
+            out Quaternion yawOffset,
+            out Quaternion localPitchOffset)
+        {
+            Vector3 safeDesired = desiredForward.sqrMagnitude > 1e-4f ? desiredForward.normalized : Vector3.forward;
+            Vector3 flatDesired = new Vector3(safeDesired.x, 0f, safeDesired.z);
+            if (flatDesired.sqrMagnitude < 1e-4f)
+                flatDesired = Vector3.forward;
+            else
+                flatDesired.Normalize();
 
             Vector3 currentForward = converted * Vector3.forward;
-            Vector3 flatCurrentForward = new Vector3(currentForward.x, 0f, currentForward.z);
-            if (flatCurrentForward.sqrMagnitude < 1e-4f)
-                flatCurrentForward = Vector3.forward;
+            Vector3 flatCurrent = new Vector3(currentForward.x, 0f, currentForward.z);
+            if (flatCurrent.sqrMagnitude < 1e-4f)
+                flatCurrent = Vector3.forward;
+            else
+                flatCurrent.Normalize();
 
-            float deltaYaw = Vector3.SignedAngle(flatCurrentForward, flatDesiredForward, Vector3.up);
-            _yawCalibrationOffset = Quaternion.AngleAxis(deltaYaw, Vector3.up);
+            float deltaYaw = Vector3.SignedAngle(flatCurrent, flatDesired, Vector3.up);
+            yawOffset = Quaternion.AngleAxis(deltaYaw, Vector3.up);
+            // Keep gravity-referenced Pitch untouched so virtual barrel elevation always matches physical barrel elevation.
+            localPitchOffset = Quaternion.identity;
         }
 
         private Quaternion ConvertImuToUnity(Quaternion imuQ)

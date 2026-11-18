@@ -19,6 +19,7 @@ namespace VRAtis.Hardware
     {
         public const byte PacketHeader = 0xAA;
         public const int PacketSizeBytes = 22;
+        public const int MaxPacketSizeBytes = 23;
         private const int SioUdpConnReset = -1744830452;
 
         [Header("Ağ ve Performans Ayarları")]
@@ -75,7 +76,7 @@ namespace VRAtis.Hardware
 
         // Pre-allocated receive buffers (0 Bytes GC Allocation in ReceiveLoop)
         private readonly byte[] _recvBuffer = new byte[64];
-        private readonly byte[] _latestValidPacket = new byte[PacketSizeBytes];
+        private readonly byte[] _latestValidPacket = new byte[MaxPacketSizeBytes];
 
         // Shared state guarded by _stateLock
         private readonly object _stateLock = new object();
@@ -197,7 +198,9 @@ namespace VRAtis.Hardware
                     if (bytesRead < PacketSizeBytes || _recvBuffer[0] != PacketHeader)
                         continue;
 
-                    Buffer.BlockCopy(_recvBuffer, 0, _latestValidPacket, 0, PacketSizeBytes);
+                    int latestPacketLen = Mathf.Min(bytesRead, MaxPacketSizeBytes);
+                    _latestValidPacket[22] = 0;
+                    Buffer.BlockCopy(_recvBuffer, 0, _latestValidPacket, 0, latestPacketLen);
                     int burstCount = 1;
                     int drainedExtra = 0;
 
@@ -207,7 +210,9 @@ namespace VRAtis.Hardware
                         int extraRead = _socket.Receive(_recvBuffer, 0, _recvBuffer.Length, SocketFlags.None);
                         if (extraRead >= PacketSizeBytes && _recvBuffer[0] == PacketHeader)
                         {
-                            Buffer.BlockCopy(_recvBuffer, 0, _latestValidPacket, 0, PacketSizeBytes);
+                            latestPacketLen = Mathf.Min(extraRead, MaxPacketSizeBytes);
+                            _latestValidPacket[22] = 0;
+                            Buffer.BlockCopy(_recvBuffer, 0, _latestValidPacket, 0, latestPacketLen);
                             burstCount++;
                             drainedExtra++;
                         }
@@ -219,6 +224,7 @@ namespace VRAtis.Hardware
                     float qz = BitConverter.ToSingle(_latestValidPacket, 13);
                     byte trig = _latestValidPacket[17];
                     uint shots = BitConverter.ToUInt32(_latestValidPacket, 18);
+                    bool shoulder = (latestPacketLen >= 23 && _latestValidPacket[22] != 0) || ((trig & 0x02) != 0);
 
                     if (!IsFinite(qw) || !IsFinite(qx) || !IsFinite(qy) || !IsFinite(qz))
                         continue;
@@ -242,7 +248,7 @@ namespace VRAtis.Hardware
                     {
                         _sharedQuat = parsed;
                         _sharedTriggerPressed = (trig & 0x01) != 0;
-                        _sharedShoulderPressed = (trig & 0x02) != 0;
+                        _sharedShoulderPressed = shoulder;
                         _sharedShotCount = shots;
                         _sharedPacketSeq++;
                         _hasReceivedAnyPacket = true;

@@ -9,7 +9,7 @@ namespace VRAtis.EditorTools
     [InitializeOnLoad]
     public static class CameraSetupTool
     {
-        private const string AutoSetupVersionKey = "VRAtis_Camera_V16_Done";
+        private const string AutoSetupVersionKey = "VRAtis_Camera_V19_Done";
 
         static CameraSetupTool()
         {
@@ -126,6 +126,8 @@ namespace VRAtis.EditorTools
                 optSo.FindProperty("requestedHeight").intValue = 240;
                 optSo.FindProperty("minPositionSmoothSpeed").floatValue = 12f;
                 optSo.FindProperty("maxPositionSmoothSpeed").floatValue = 38f;
+                optSo.FindProperty("autoPowerRedDotNearEye").boolValue = false;
+                optSo.FindProperty("steadyHoldSeconds").floatValue = 5.0f;
                 optSo.ApplyModifiedPropertiesWithoutUndo();
 
                 SerializedObject aimSo = new SerializedObject(aimCtrl);
@@ -137,14 +139,15 @@ namespace VRAtis.EditorTools
                 aimSo.FindProperty("stereoRig").objectReferenceValue = stereoRig;
                 aimSo.FindProperty("opticalTracker").objectReferenceValue = opticalTracker;
                 aimSo.FindProperty("rifleReceiver").objectReferenceValue = receiver;
+                aimSo.FindProperty("eyeReliefMeters").floatValue = 0.115f;
                 aimSo.ApplyModifiedPropertiesWithoutUndo();
 
                 if (redDotSight != null)
                 {
                     SerializedObject dotSo = new SerializedObject(redDotSight);
                     dotSo.FindProperty("dotColor").colorValue = new Color(3.6f, 0.16f, 0.08f, 1f);
-                    dotSo.FindProperty("alwaysKeepReticleOn").boolValue = true;
-                    dotSo.FindProperty("reticlePower").floatValue = 1f;
+                    dotSo.FindProperty("alwaysKeepReticleOn").boolValue = false;
+                    dotSo.FindProperty("reticlePower").floatValue = 0f;
                     dotSo.ApplyModifiedPropertiesWithoutUndo();
                 }
             }

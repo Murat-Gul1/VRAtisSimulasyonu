@@ -35,6 +35,10 @@ namespace VRAtis.Weapons
         [Header("Şarjör ve Mermi (Askeri Standart 30 Mermi - Ekransız)")]
         [SerializeField] private int magazineCapacity = 30;
         [SerializeField] private bool startWithFullMagazine = true;
+        [Tooltip("Şarjör boşaldığında otomatik olarak boş şarjörü atıp yenisini takar (gelecekte donanımsal şarjör sensörü gelince kapatılabilir).")]
+        [SerializeField] private bool autoReloadOnEmpty = true;
+        [Range(0.05f, 1.5f)]
+        [SerializeField] private float autoReloadDelaySec = 0.35f;
         [SerializeField] private float ejectToSwapDelaySec = 0.52f;
         [SerializeField] private float insertSeatDurationSec = 0.26f;
         [SerializeField] private float boltReleaseDelaySec = 0.14f;
@@ -72,6 +76,8 @@ namespace VRAtis.Weapons
 
         private ReloadPhase _reloadPhase = ReloadPhase.None;
         private float _reloadTimer;
+        private bool _pendingAutoReload;
+        private float _autoReloadTimer;
 
         private void Awake()
         {
@@ -165,6 +171,12 @@ namespace VRAtis.Weapons
                 IsBoltLockedOpen = true;
                 if (mechanismController != null)
                     mechanismController.LockBoltOpenAfterCycle();
+
+                if (autoReloadOnEmpty)
+                {
+                    _pendingAutoReload = true;
+                    _autoReloadTimer = autoReloadDelaySec;
+                }
             }
 
             onWeaponFired?.Invoke();
@@ -174,6 +186,8 @@ namespace VRAtis.Weapons
         {
             if (IsReloading)
                 return;
+
+            _pendingAutoReload = false;
 
             if (IsMagazineInserted)
             {
@@ -192,6 +206,8 @@ namespace VRAtis.Weapons
             if (IsReloading)
                 return;
 
+            _pendingAutoReload = false;
+
             if (IsMagazineInserted)
                 EjectMagazine();
             else
@@ -203,6 +219,7 @@ namespace VRAtis.Weapons
             if (!IsMagazineInserted || IsReloading)
                 return;
 
+            _pendingAutoReload = false;
             IsMagazineInserted = false;
             CurrentAmmo = 0;
             if (mechanismController != null)
@@ -215,6 +232,7 @@ namespace VRAtis.Weapons
             if (IsMagazineInserted || IsReloading)
                 return;
 
+            _pendingAutoReload = false;
             BeginInsertFreshMagazine();
         }
 
@@ -232,6 +250,17 @@ namespace VRAtis.Weapons
 
         private void UpdateReloadState(float dt)
         {
+            if (_pendingAutoReload && !IsReloading)
+            {
+                _autoReloadTimer -= dt;
+                if (_autoReloadTimer <= 0f)
+                {
+                    _pendingAutoReload = false;
+                    Reload();
+                    return;
+                }
+            }
+
             if (_reloadPhase == ReloadPhase.None)
                 return;
 

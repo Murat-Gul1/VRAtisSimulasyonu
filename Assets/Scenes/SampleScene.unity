@@ -25155,7 +25155,7 @@ MonoBehaviour:
   toggleAimOnKey: 1
   alignCameraRotationWhenNoMobileSensor: 1
   aimTransitionDurationSec: 0.24
-  eyeReliefMeters: 0.165
+  eyeReliefMeters: 0.115
   adsVerticalOffsetMeters: 0
   centerDominantRightEyeInVr: 1
   singleScreenFovZoomDeg: 9
@@ -25198,10 +25198,10 @@ MonoBehaviour:
   minPositionSmoothSpeed: 12
   maxPositionSmoothSpeed: 38
   maxSingleFrameJumpMeters: 0.18
-  autoPowerRedDotNearEye: 1
+  autoPowerRedDotNearEye: 0
   redDotWakeLateralMeters: 0.15
   vrInsertGraceSeconds: 5
-  steadyHoldSeconds: 1.5
+  steadyHoldSeconds: 5
   completedBannerDurationSeconds: 2
 --- !u!1001 &1257692103
 PrefabInstance:
@@ -33177,8 +33177,8 @@ MonoBehaviour:
   rifleForwardReference: {fileID: 1283765770}
   dotColor: {r: 3.6, g: 0.16, b: 0.08, a: 1}
   showOuterRing: 0
-  alwaysKeepReticleOn: 1
-  reticlePower: 1
+  alwaysKeepReticleOn: 0
+  reticlePower: 0
 --- !u!1001 &1549080014
 PrefabInstance:
   m_ObjectHideFlags: 0

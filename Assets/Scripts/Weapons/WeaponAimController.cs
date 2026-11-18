@@ -37,8 +37,8 @@ namespace VRAtis.Weapons
         [SerializeField] private float aimTransitionDurationSec = 0.24f;
 
         [Tooltip("Red Dot camının arkasından gözün duracağı mesafe (metre).")]
-        [Range(0.08f, 0.35f)]
-        [SerializeField] private float eyeReliefMeters = 0.165f;
+        [Range(0.06f, 0.35f)]
+        [SerializeField] private float eyeReliefMeters = 0.115f;
 
         [Tooltip("Gerekirse nişan göz yüksekliği ince ayarı (metre).")]
         [Range(-0.05f, 0.05f)]
@@ -58,9 +58,14 @@ namespace VRAtis.Weapons
         private bool _sightOffsetCached;
         private Vector3 _fallbackReadyPos;
         private Quaternion _fallbackReadyRot = Quaternion.identity;
+        private Vector3 _initialRifleWorldPos;
+        private Vector3 _activeBaseRifleWorldPos;
+        private RifleOrientationController _rifleOrientationController;
 
         private bool _keyAimActive;
         private bool _hardwareShoulderActive;
+        private bool _wasShoulderPressed;
+        private float _unshoulderedTimer = 1f;
         private float _linearAim01;
         private float _easedAim01;
         private bool _isIdleAtReadyPose = true;
@@ -123,6 +128,24 @@ namespace VRAtis.Weapons
                 }
             }
 #endif
+
+            bool aimingNow = IsAiming;
+            if (!aimingNow)
+            {
+                _unshoulderedTimer += Time.unscaledDeltaTime;
+            }
+            else if (!_wasShoulderPressed)
+            {
+                // Re-zero ESP32 IMU once at the instant Red Dot opens (after at least 0.30s unshouldered)
+                // so accumulated IMU gyro drift is cleared while head rotation remains free after opening.
+                if (_unshoulderedTimer >= 0.30f && _rifleOrientationController != null)
+                {
+                    _rifleOrientationController.RecenterToHeadForward();
+                }
+                _unshoulderedTimer = 0f;
+            }
+
+            _wasShoulderPressed = aimingNow;
         }
 
         private void LateUpdate()
@@ -133,12 +156,15 @@ namespace VRAtis.Weapons
             if (!_sightOffsetCached)
                 CacheReadyPoseAndSightOffset();
 
+            Vector3 baseRifleWorldPos = (opticalTracker != null && opticalTracker.TryGetSmoothedWorldPos(out Vector3 optWorldPos))
+                ? optWorldPos
+                : _initialRifleWorldPos;
+            _activeBaseRifleWorldPos = baseRifleWorldPos;
+
             bool aiming = IsAiming;
 
-            // When not aiming and already settled in ready stance, do not overwrite
-            // mainCameraTransform.position/rotation or re-apply MaterialPropertyBlock every frame.
-            // This gives HeadTrackingCameraController (and its onBeforeRender hook) uncontested
-            // control of the camera during VR head rotation.
+            // When not aiming and already settled in ready stance, leave camera and rifle transforms untouched
+            // so HeadTrackingCameraController and OpticalRifleTracker operate cleanly.
             if (!aiming && _linearAim01 <= 0.0001f)
             {
                 if (!_isIdleAtReadyPose)
@@ -152,6 +178,12 @@ namespace VRAtis.Weapons
                     Vector3 restPos = headTracker != null ? headTracker.ReadyWorldPosition : _fallbackReadyPos;
                     if ((mainCameraTransform.position - restPos).sqrMagnitude > 1e-8f)
                         mainCameraTransform.position = restPos;
+
+                    if (opticalTracker == null || !opticalTracker.TryGetSmoothedWorldPos(out _))
+                    {
+                        if ((playerRifleTransform.position - _initialRifleWorldPos).sqrMagnitude > 1e-8f)
+                            playerRifleTransform.position = _initialRifleWorldPos;
+                    }
 
                     if (_wasAligningRotation)
                     {
@@ -172,7 +204,7 @@ namespace VRAtis.Weapons
             float step = Time.unscaledDeltaTime / Mathf.Max(0.05f, aimTransitionDurationSec);
             _linearAim01 = Mathf.MoveTowards(_linearAim01, target, step);
 
-            // Smooth S-curve ease-in/ease-out for cinematic cheek-weld motion
+            // Smooth S-curve ease-in/ease-out for cheek-weld ADS motion
             _easedAim01 = _linearAim01 * _linearAim01 * (3f - 2f * _linearAim01);
 
             // Illuminate glowing red dot swiftly as optic rises into view
@@ -201,24 +233,8 @@ namespace VRAtis.Weapons
 
         private void UpdateAimCameraPose()
         {
-            if (opticalTracker != null && opticalTracker.IsActivelyTrackingPosition && !_hardwareShoulderActive)
-                return;
-
             Vector3 readyPos = headTracker != null ? headTracker.ReadyWorldPosition : _fallbackReadyPos;
             Quaternion readyRot = headTracker != null ? headTracker.ReadyWorldRotation : _fallbackReadyRot;
-
-            float vrEyeShiftX = (centerDominantRightEyeInVr && stereoRig != null)
-                ? stereoRig.HalfVirtualIpdMeters
-                : 0f;
-
-            Vector3 adsLocalOffset = _localSightCenterInRifle + new Vector3(-vrEyeShiftX, adsVerticalOffsetMeters, -eyeReliefMeters);
-            Vector3 adsWorldPos = playerRifleTransform.TransformPoint(adsLocalOffset);
-            Vector3 targetPos = Vector3.Lerp(readyPos, adsWorldPos, _easedAim01);
-
-            if ((mainCameraTransform.position - targetPos).sqrMagnitude > 1e-8f)
-            {
-                mainCameraTransform.position = targetPos;
-            }
 
             bool shouldAlignRotation = alignCameraRotationWhenNoMobileSensor &&
                                        (headTracker == null || !headTracker.IsUsingMobileSensor);
@@ -235,6 +251,28 @@ namespace VRAtis.Weapons
                     mainCameraTransform.rotation = readyRot;
                 _wasAligningRotation = false;
             }
+
+            // Keep Main Camera pinned at fixed ready eye origin; move the RIFLE along the RIFLE's own orientation
+            // (never mainCameraTransform.rotation!) so turning your head left/right/up/down leaves the rifle stationary.
+            if ((mainCameraTransform.position - readyPos).sqrMagnitude > 1e-8f)
+                mainCameraTransform.position = readyPos;
+
+            Quaternion rifleRot = playerRifleTransform.rotation;
+            float vrEyeShiftX = (centerDominantRightEyeInVr && stereoRig != null)
+                ? stereoRig.HalfVirtualIpdMeters
+                : 0f;
+
+            Vector3 eyeWorldPos = readyPos + (rifleRot * Vector3.right) * vrEyeShiftX;
+            Vector3 desiredSightWorldPos = eyeWorldPos
+                + (rifleRot * Vector3.forward) * eyeReliefMeters
+                + (rifleRot * Vector3.up) * adsVerticalOffsetMeters;
+
+            Vector3 sightOffsetWorld = playerRifleTransform.TransformPoint(_localSightCenterInRifle) - playerRifleTransform.position;
+            Vector3 adsRifleWorldPos = desiredSightWorldPos - sightOffsetWorld;
+            Vector3 targetRiflePos = Vector3.Lerp(_activeBaseRifleWorldPos, adsRifleWorldPos, _easedAim01);
+
+            if ((playerRifleTransform.position - targetRiflePos).sqrMagnitude > 1e-8f)
+                playerRifleTransform.position = targetRiflePos;
         }
 
         private void ApplyReticlePowerIfChanged(float ledPower)
@@ -259,6 +297,11 @@ namespace VRAtis.Weapons
                 else
                     playerRifleTransform = transform;
             }
+
+            if (_rifleOrientationController == null && playerRifleTransform != null)
+                _rifleOrientationController = playerRifleTransform.GetComponent<RifleOrientationController>();
+            if (_rifleOrientationController == null)
+                _rifleOrientationController = FindAnyObjectByType<RifleOrientationController>();
 
             if (redDotSight == null)
                 redDotSight = FindAnyObjectByType<RedDotSightController>();
@@ -304,6 +347,8 @@ namespace VRAtis.Weapons
 
             if (playerRifleTransform == null)
                 return;
+
+            _initialRifleWorldPos = playerRifleTransform.position;
 
             Vector3 sightWorld = Vector3.zero;
             bool found = false;

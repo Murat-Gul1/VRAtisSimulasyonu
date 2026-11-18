@@ -21,11 +21,11 @@ namespace VRAtis.Weapons
         [SerializeField] private bool showOuterRing;
 
         [Header("Red Dot Gücü (Nişan Alma LED Kontrolü)")]
-        [Tooltip("Açıkken Red Dot sürekli yanık kalır (paralaks gölgelendiricisi yalnızca nişan hattından bakınca noktayı gösterir).")]
-        [SerializeField] private bool alwaysKeepReticleOn = true;
+        [Tooltip("Açıkken Red Dot sürekli yanık kalır; kapalıyken yalnız omuz temas sensörü (GPIO 16) veya Q tuşu ile yanar.")]
+        [SerializeField] private bool alwaysKeepReticleOn = false;
 
         [Range(0f, 1f)]
-        [SerializeField] private float reticlePower = 1f;
+        [SerializeField] private float reticlePower = 0f;
 
         private Renderer _renderer;
         private MaterialPropertyBlock _propBlock;

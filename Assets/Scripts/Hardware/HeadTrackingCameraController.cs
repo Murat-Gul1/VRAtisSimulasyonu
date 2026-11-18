@@ -94,6 +94,7 @@ namespace VRAtis.Hardware
         private float _smoothedCutoff = 32f;
 
         public bool IsUsingMobileSensor => _sensorReady;
+        public bool IsRoll180Compensated => _isRoll180Compensated;
         public Vector3 ReadyWorldPosition => _readyPosition;
         public Quaternion ReadyWorldRotation => _smoothedHeadRot;
 
