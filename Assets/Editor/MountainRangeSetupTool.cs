@@ -3,7 +3,6 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
 using VRAtis.Environment;
-using VRAtis.Targets;
 
 namespace VRAtis.EditorTools
 {
@@ -78,11 +77,7 @@ namespace VRAtis.EditorTools
                 EditorUtility.SetDirty(mainCam);
             }
 
-            // 3. Ensure 300m and 500m targets exist along the 500m range so depth is immediately readable
-            EnsureRangeTarget("TestTarget_300m", new Vector3(-2.5f, 1.5f, 300f), new Vector3(1.8f, 2.0f, 0.25f));
-            EnsureRangeTarget("TestTarget_500m", new Vector3(0.15f, 1.8f, 500f), new Vector3(2.4f, 2.6f, 0.3f));
-
-            // 4. Rebuild Environment_Mountains ring + Rear Shadow Mountain
+            // 3. Rebuild Environment_Mountains ring + Rear Shadow Mountain
             GameObject existingRoot = GameObject.Find("Environment_Mountains");
             if (existingRoot != null)
                 Object.DestroyImmediate(existingRoot);
@@ -249,19 +244,6 @@ namespace VRAtis.EditorTools
                         Object.DestroyImmediate(col);
                 }
             }
-        }
-
-        private static void EnsureRangeTarget(string targetName, Vector3 pos, Vector3 scale)
-        {
-            GameObject existing = GameObject.Find(targetName);
-            if (existing != null)
-                return;
-
-            GameObject t = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            t.name = targetName;
-            t.transform.position = pos;
-            t.transform.localScale = scale;
-            t.AddComponent<TestTargetFeedback>();
         }
 
         private static Material BuildMountainMaterial(string matName, string baseColorPath)

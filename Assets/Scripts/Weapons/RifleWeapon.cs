@@ -28,9 +28,15 @@ namespace VRAtis.Weapons
         [SerializeField] private Esp32RifleReceiver esp32Receiver;
         [Tooltip("Merminin çıkacağı namlu ucu Transform'u.")]
         [SerializeField] private Transform muzzleTransform;
+        [Tooltip("Nişangâh yüksekliği (sightHeightCM) ölçümü için Red Dot merkez noktası (boşsa RedDotAnchor otomatik aranır).")]
+        [SerializeField] private Transform sightReferenceTransform;
         [Tooltip("BallisticBullet bileşeni taşıyan mermi prefab'ı (boşsa runtime'da minimal obje üretilir).")]
         [SerializeField] private BallisticBullet bulletPrefab;
         [SerializeField] private RifleMechanismController mechanismController;
+
+        [Header("Balistik Profili")]
+        [Tooltip("Pooled mermilerde kullanılacak mühimmat tipi (7.62 M118LR veya AR-15 5.56 M855).")]
+        [SerializeField] private AmmoPreset ammoPreset = AmmoPreset.Nato762_M118LR_175gr;
 
         [Header("Şarjör ve Mermi (Askeri Standart 30 Mermi - Ekransız)")]
         [SerializeField] private int magazineCapacity = 30;
@@ -78,6 +84,7 @@ namespace VRAtis.Weapons
         private float _reloadTimer;
         private bool _pendingAutoReload;
         private float _autoReloadTimer;
+        private float? _measuredSightHeightCm;
 
         private void Awake()
         {
@@ -90,11 +97,35 @@ namespace VRAtis.Weapons
             if (muzzleTransform == null)
                 muzzleTransform = transform;
 
+            if (sightReferenceTransform == null)
+                sightReferenceTransform = FindDeepChild(transform, "RedDotAnchor");
+
+            if (sightReferenceTransform != null && muzzleTransform != null)
+            {
+                float heightCm = Vector3.Dot(sightReferenceTransform.position - muzzleTransform.position, muzzleTransform.up) * 100f;
+                if (heightCm > 0.5f && heightCm < 25f)
+                    _measuredSightHeightCm = heightCm;
+            }
+
             IsMagazineInserted = startWithFullMagazine;
             CurrentAmmo = startWithFullMagazine ? magazineCapacity : 0;
             IsBoltLockedOpen = false;
 
             WarmPool();
+        }
+
+        private static Transform FindDeepChild(Transform parent, string targetName)
+        {
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                Transform child = parent.GetChild(i);
+                if (child.name == targetName)
+                    return child;
+                Transform nested = FindDeepChild(child, targetName);
+                if (nested != null)
+                    return nested;
+            }
+            return null;
         }
 
         private void OnEnable()
@@ -160,7 +191,10 @@ namespace VRAtis.Weapons
                 muzzleTransform.rotation,
                 0f,
                 0f,
-                ReturnBulletToPool);
+                ReturnBulletToPool,
+                _measuredSightHeightCm,
+                transform.root,
+                bulletPrefab == null ? ammoPreset : (AmmoPreset?)null);
 
             // Apply spring impulse to child recoil pivot
             _recoilPosOffset.z -= recoilKickBackMeters;
@@ -319,7 +353,7 @@ namespace VRAtis.Weapons
 
             GameObject go = new GameObject("PooledBallisticBullet");
 
-            // Realistic compact 5.56mm copper-jacketed projectile without unnatural laser trail streaks
+            // Compact copper-jacketed ballistic projectile without unnatural laser trail streaks
             GameObject visual = GameObject.CreatePrimitive(PrimitiveType.Capsule);
             visual.name = "BulletVisual";
             visual.transform.SetParent(go.transform, false);
@@ -331,7 +365,9 @@ namespace VRAtis.Weapons
             if (projectileMat != null)
                 visual.GetComponent<MeshRenderer>().sharedMaterial = projectileMat;
 
-            return go.AddComponent<BallisticBullet>();
+            BallisticBullet created = go.AddComponent<BallisticBullet>();
+            created.ApplyAmmoPreset(ammoPreset);
+            return created;
         }
 
         private static Material GetSharedTracerMaterial()

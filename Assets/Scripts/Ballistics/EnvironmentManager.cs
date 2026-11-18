@@ -18,9 +18,14 @@ namespace VRAtis.Ballistics
         [SerializeField] private float humidityPercent = 50f;
         [SerializeField] private float altitudeMeters = 0f;
 
-        [Header("Fizik Sabitleri")]
+        [Header("Fizik ve Coriolis Sabitleri")]
         public float gravity = BallisticMath.StandardGravity;
         public float earthRadiusMeters = 6371000f;
+        [Tooltip("Atış alanının enlemi (derece; Türkiye ~36-42°N).")]
+        public float latitudeDeg = 41f;
+        [Tooltip("Sahnedeki +Z ileri yönünün gerçek pusula azimutu (0 = Kuzey, 90 = Doğu, 180 = Güney, 270 = Batı).")]
+        public float downrangeNorthAzimuthDeg = 0f;
+        public bool enableCoriolis = true;
 
         [Header("Rüzgar (Dünya Ekseni m/s)")]
         [Tooltip("X = Sağ/Sol yan rüzgar, Y = Dikey akım, Z = Baş/Arka rüzgar")]
@@ -106,6 +111,23 @@ namespace VRAtis.Ballistics
 
             Vector3 windDir = horizontalWind / horizontalMag;
             return windSpeedMS + windDir * (h * windGradientPerMeter);
+        }
+
+        /// <summary>
+        /// Returns Earth's angular velocity vector expressed in Unity world axes (East/Up/North rotated by downrange azimuth).
+        /// Use +2f * Vector3.Cross(omegaUnity, velocity) for Coriolis + Eotvos acceleration in Unity's left-handed frame.
+        /// </summary>
+        public Vector3 GetEarthAngularVelocityUnity()
+        {
+            if (!enableCoriolis)
+                return Vector3.zero;
+
+            float latRad = latitudeDeg * Mathf.Deg2Rad;
+            float azRad = downrangeNorthAzimuthDeg * Mathf.Deg2Rad;
+            float horiz = Mathf.Cos(latRad);
+
+            Vector3 northDir = new Vector3(-Mathf.Sin(azRad) * horiz, Mathf.Sin(latRad), Mathf.Cos(azRad) * horiz);
+            return northDir * BallisticMath.EarthAngularSpeedRadS;
         }
 
         private void PushWindToShaders()

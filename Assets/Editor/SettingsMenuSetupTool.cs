@@ -6,6 +6,7 @@ using UnityEngine.UI;
 using VRAtis.Ballistics;
 using VRAtis.Environment;
 using VRAtis.Hardware;
+using VRAtis.Targets;
 using VRAtis.UI;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
@@ -19,7 +20,7 @@ namespace VRAtis.EditorTools
     {
         private const string UiTexDir = "Assets/UI/Textures";
         private const string CanvasName = "SettingsUI_Canvas";
-        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V4_Done";
+        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V5_Done";
 
         private static readonly Color PanelBgColor = new Color(0.06f, 0.09f, 0.13f, 0.90f);
         private static readonly Color HeaderBgColor = new Color(0.09f, 0.14f, 0.20f, 0.96f);
@@ -51,11 +52,15 @@ namespace VRAtis.EditorTools
         [MenuItem("VRAtis/Ayarlar Menüsünü Kur")]
         public static void SetupSettingsMenu()
         {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+                return;
+
             EnsureEventSystem();
 
             Sprite roundedSprite = LoadSprite($"{UiTexDir}/RoundedPanel_9Slice.png", isNineSlice: true);
             Sprite gearSprite = LoadSprite($"{UiTexDir}/GearIcon.png", isNineSlice: false);
             Sprite weatherSprite = LoadSprite($"{UiTexDir}/WeatherIcon.png", isNineSlice: false);
+            Sprite targetSprite = LoadSprite($"{UiTexDir}/TargetIcon.png", isNineSlice: false) ?? gearSprite;
             Sprite radioRingSprite = LoadSprite($"{UiTexDir}/RadioRing.png", isNineSlice: false);
             Sprite radioDotSprite = LoadSprite($"{UiTexDir}/RadioDot.png", isNineSlice: false);
             Sprite checkRingSprite = LoadSprite($"{UiTexDir}/CheckBoxRing.png", isNineSlice: false);
@@ -181,6 +186,15 @@ namespace VRAtis.EditorTools
                 "Optik Takip (Kamera & LED)",
                 "2 LED ile tüfek 3B konum takibi & kalibrasyon");
 
+            CreateCategoryButton(
+                "TargetsMenuButton",
+                mainPage.transform,
+                roundedSprite,
+                targetSprite,
+                font,
+                "Hedef",
+                "Hedef mesafesi, sayısı (0-6) ve yan yana aralık ayarı");
+
             CreateVrCalibrationCard(mainPage.transform, roundedSprite, checkRingSprite, checkMarkSprite, font);
 
             // Page 2: Weather Selection Sub-Panel
@@ -216,6 +230,11 @@ namespace VRAtis.EditorTools
             // Page 3: Optical Camera & LED Tracker Sub-Panel
             GameObject opticalPage = BuildOpticalCategoryPage(contentGo.transform, roundedSprite, checkRingSprite, checkMarkSprite, font);
 
+            // Page 4: Sport Drill & Range Targets Sub-Panel ("Hedef")
+            GameObject targetPage = BuildTargetCategoryPage(contentGo.transform, roundedSprite, font);
+
+            TargetRangeManager rangeMgr = SteelGongSetupTool.EnsureTargetRangeManager(null, null);
+
             // Wire controller onto Canvas root
             SettingsMenuController menuCtrl = canvasGo.AddComponent<SettingsMenuController>();
             SerializedObject so = new SerializedObject(menuCtrl);
@@ -223,18 +242,20 @@ namespace VRAtis.EditorTools
             so.FindProperty("environmentManager").objectReferenceValue = Object.FindAnyObjectByType<EnvironmentManager>();
             so.FindProperty("stereoRig").objectReferenceValue = Object.FindAnyObjectByType<CardboardStereoRig>();
             so.FindProperty("opticalTracker").objectReferenceValue = Object.FindAnyObjectByType<OpticalRifleTracker>();
+            so.FindProperty("targetRangeManager").objectReferenceValue = rangeMgr;
             so.FindProperty("primaryEyeRoot").objectReferenceValue = primaryRootRt;
             so.ApplyModifiedPropertiesWithoutUndo();
 
             weatherPage.SetActive(false);
             opticalPage.SetActive(false);
+            targetPage.SetActive(false);
             windowGo.SetActive(false);
 
             EditorUtility.SetDirty(canvasGo);
             EditorSceneManager.MarkSceneDirty(canvasGo.scene);
             EditorSceneManager.SaveOpenScenes();
             EditorPrefs.SetBool(AutoSetupVersionKey, true);
-            Debug.Log("[SettingsMenuSetupTool] V4 Kuruldu: Çift göz stereo Ayarlar menüsü + VR Mercek + Optik LED Takip kalibrasyonu!");
+            Debug.Log("[SettingsMenuSetupTool] V5 Kuruldu: Hedef Drill Menüsü (0-6 hedef, 20-200m+ mesafe, 1-30m aralık) + VR Stereo Ayarlar!");
         }
 
         private static void EnsureEventSystem()
@@ -535,6 +556,79 @@ namespace VRAtis.EditorTools
             CreateStepAdjustRow("OpticDomRow", page.transform, roundedSprite, font, "DomMinusButton", "DomValueText", "DomPlusButton", "-", "Renk Eşiği: 36", "+");
 
             return page;
+        }
+
+        private static GameObject BuildTargetCategoryPage(Transform parent, Sprite roundedSprite, Font font)
+        {
+            GameObject page = CreateSubPageContainer("TargetCategoryPage", parent, 6f);
+            CreateSubPageHeader("TargetSubHeader", page.transform, roundedSprite, font, "HEDEF VE DRİL AYARLARI");
+
+            GameObject summaryBox = CreateRoundedPanel("TargetSummaryBox", page.transform, roundedSprite, HeaderBgColor);
+            LayoutElement sumLe = summaryBox.AddComponent<LayoutElement>();
+            sumLe.minHeight = 34f;
+            sumLe.preferredHeight = 34f;
+            Text sumTxt = CreateText("TargetSummaryText", summaryBox.transform, font, "Aktif: Klasik Poligon (25 / 100 / 300 / 500 m)", 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(sumTxt.GetComponent<RectTransform>());
+
+            // 1. Target Count (0..6)
+            CreateSectionLabel("TargetCountHeader", page.transform, font, "HEDEF SAYISI (0 - 6)");
+            CreateChipRow("TargetCountRow", page.transform, roundedSprite, font, 34f,
+                new[] { ("CountBtn_0", "0"), ("CountBtn_1", "1"), ("CountBtn_2", "2"), ("CountBtn_3", "3"), ("CountBtn_4", "4"), ("CountBtn_5", "5"), ("CountBtn_6", "6") });
+
+            CreateDivider("TargetDiv1", page.transform);
+
+            // 2. Target Distance (20, 25, 50, 100, 200m + -5/+5m fine adjust)
+            CreateSectionLabel("TargetDistHeader", page.transform, font, "HEDEF MESAFESİ");
+            CreateChipRow("TargetDistPresetRow", page.transform, roundedSprite, font, 34f,
+                new[] { ("DistBtn_20", "20m"), ("DistBtn_25", "25m"), ("DistBtn_50", "50m"), ("DistBtn_100", "100m"), ("DistBtn_200", "200m") });
+            CreateStepAdjustRow("TargetDistStepRow", page.transform, roundedSprite, font, "DistMinusButton", "DistValueText", "DistPlusButton", "-5 m", "25 m", "+5 m");
+
+            CreateDivider("TargetDiv2", page.transform);
+
+            // 3. Target Spacing (1..30m, default 5m)
+            CreateSectionLabel("TargetSpacingHeader", page.transform, font, "HEDEF ARALIĞI (YAN YANA: 1 - 30 m)");
+            CreateChipRow("TargetSpacingPresetRow", page.transform, roundedSprite, font, 34f,
+                new[] { ("SpacingBtn_1", "1m"), ("SpacingBtn_3", "3m"), ("SpacingBtn_5", "5m"), ("SpacingBtn_10", "10m"), ("SpacingBtn_20", "20m"), ("SpacingBtn_30", "30m") });
+            CreateStepAdjustRow("TargetSpacingStepRow", page.transform, roundedSprite, font, "SpacingMinusButton", "SpacingValueText", "SpacingPlusButton", "-1 m", "5 m aralık", "+1 m");
+
+            CreateDivider("TargetDiv3", page.transform);
+
+            // 4. Utility Row: Classic Multi-Distance Range vs Clear Marks
+            GameObject utilRow = CreateRowContainer("TargetUtilityRow", page.transform, 36f);
+            HorizontalLayoutGroup utilLayout = utilRow.AddComponent<HorizontalLayoutGroup>();
+            utilLayout.spacing = 8f;
+            utilLayout.childControlWidth = true;
+            utilLayout.childControlHeight = true;
+            utilLayout.childForceExpandWidth = true;
+            utilLayout.childForceExpandHeight = true;
+
+            Button classicBtn = CreateRoundedButton("ClassicRangeButton", utilRow.transform, roundedSprite, AccentColor, Vector2.zero);
+            Text classicLbl = CreateText("Label", classicBtn.transform, font, "Klasik Poligon (25-500m)", 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(classicLbl.GetComponent<RectTransform>());
+
+            Button clearBtn = CreateRoundedButton("ClearMarksButton", utilRow.transform, roundedSprite, CardBgColor, Vector2.zero);
+            Text clearLbl = CreateText("Label", clearBtn.transform, font, "İzleri Sıfırla", 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(clearLbl.GetComponent<RectTransform>());
+
+            return page;
+        }
+
+        private static void CreateChipRow(string rowName, Transform parent, Sprite roundedSprite, Font font, float height, (string btnName, string label)[] chips)
+        {
+            GameObject row = CreateRowContainer(rowName, parent, height);
+            HorizontalLayoutGroup hLayout = row.AddComponent<HorizontalLayoutGroup>();
+            hLayout.spacing = 5f;
+            hLayout.childControlWidth = true;
+            hLayout.childControlHeight = true;
+            hLayout.childForceExpandWidth = true;
+            hLayout.childForceExpandHeight = true;
+
+            for (int i = 0; i < chips.Length; i++)
+            {
+                Button btn = CreateRoundedButton(chips[i].btnName, row.transform, roundedSprite, CardBgColor, Vector2.zero);
+                Text txt = CreateText("Label", btn.transform, font, chips[i].label, 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+                StretchFull(txt.GetComponent<RectTransform>());
+            }
         }
 
         private static void CreateStepAdjustRow(

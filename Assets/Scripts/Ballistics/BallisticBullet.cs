@@ -10,24 +10,31 @@ namespace VRAtis.Ballistics
     /// </summary>
     public class BallisticBullet : MonoBehaviour
     {
-        [Header("Mermi (M118LR 175gr Varsayılan)")]
+        [Header("Mermi Profili")]
+        [SerializeField] private AmmoPreset ammoPreset = AmmoPreset.Nato762_M118LR_175gr;
         [SerializeField] private float bulletWeightGrain = 175f;
         [SerializeField] private float caliberInch = 0.308f;
         [SerializeField] private float baseMuzzleVelocityMS = 792.5f;
         [SerializeField] private DragModel dragModel = DragModel.G7;
-        [SerializeField] private float g7FormFactor = 1.04f;
+        [SerializeField] private float g7FormFactor = 1.085f;
 
-        [Header("6-DOF Aerodinamik Sabitler (Carlucci/McCoy)")]
+        [Header("6-DOF Aerodinamik Sabitler (STANAG 4355 / Carlucci-McCoy)")]
         [SerializeField] private float twistRateInch = 12f;
         [SerializeField] private float cMAlpha = 3.10f;
-        [SerializeField] private float cNAlpha = 2.00f;
+        [SerializeField] private float cNAlpha = 1.85f;
         [SerializeField] private float cNPa = -0.10f;
         [SerializeField] private float cLP = -0.012f;
-        [SerializeField] private float axialMomentOfInertia = 0.000015f;
+        [Tooltip("Açıkken mermi kütlesi ve çapından gerçekçi sivri uçlu silindir atalet momenti otomatik hesaplanır.")]
+        [SerializeField] private bool autoComputeAxialInertia = true;
+        [SerializeField] private float axialMomentOfInertia = 0.000000073f;
 
-        [Header("Sıfırlama (Zeroing) ve Geometri")]
+        [Header("Sıfırlama (Zeroing), İntegrasyon ve Namlu")]
         [SerializeField] private float sightHeightCM = 7.05f;
         [SerializeField] private float zeroDistanceMeters = 100f;
+        [Tooltip("Her FixedUpdate karesinde yapılacak RK4 alt-adım sayısı (4 adım = 5 ms çözünürlük).")]
+        [Range(1, 8)]
+        [SerializeField] private int rk4SubSteps = 4;
+        [SerializeField] private bool simulateBarrelHeating = true;
 
         [Header("Terminal Balistik")]
         [SerializeField] private LayerMask hitMask = ~0;
@@ -51,6 +58,7 @@ namespace VRAtis.Ballistics
         // Barrel heat tracker across shots
         public static int GlobalShotCounter { get; private set; }
         public static float LastShotTime { get; private set; } = -999f;
+        private static readonly RaycastHit[] RayHitBuffer = new RaycastHit[8];
 
         private float _bulletMassKg;
         private float _bulletDiameterM;
@@ -60,8 +68,10 @@ namespace VRAtis.Ballistics
         private float _cachedSpeedOfSound = -1f;
         private float _cachedMuzzleVelocity = -1f;
         private float _cachedZeroDistance = -1f;
+        private float _cachedSightHeight = -1f;
 
         private bool _isActive;
+        private Transform _shooterRoot;
         private Action<BallisticBullet> _onReturnToPool;
         private TrailRenderer _trailRenderer;
 
@@ -73,52 +83,106 @@ namespace VRAtis.Ballistics
 
         private void Awake()
         {
+            ApplyAmmoPresetIfNeeded();
             RecomputePhysicalConstants();
             _trailRenderer = GetComponentInChildren<TrailRenderer>();
         }
 
         private void OnValidate()
         {
+            ApplyAmmoPresetIfNeeded();
             RecomputePhysicalConstants();
+        }
+
+        public void ApplyAmmoPreset(AmmoPreset preset)
+        {
+            ammoPreset = preset;
+            ApplyAmmoPresetIfNeeded();
+            RecomputePhysicalConstants();
+        }
+
+        private void ApplyAmmoPresetIfNeeded()
+        {
+            if (ammoPreset == AmmoPreset.Custom)
+                return;
+
+            AmmoPresetSpec spec = BallisticMath.GetAmmoPresetSpec(ammoPreset);
+            bulletWeightGrain = spec.BulletWeightGrain;
+            caliberInch = spec.CaliberInch;
+            baseMuzzleVelocityMS = spec.MuzzleVelocityMS;
+            dragModel = spec.DragModel;
+            g7FormFactor = spec.FormFactor;
+            twistRateInch = spec.TwistRateInch;
         }
 
         private void RecomputePhysicalConstants()
         {
-            _bulletMassKg = bulletWeightGrain * BallisticMath.GrainToKg;
-            _bulletDiameterM = caliberInch * BallisticMath.InchToMeters;
+            _bulletMassKg = Mathf.Max(1e-5f, bulletWeightGrain * BallisticMath.GrainToKg);
+            _bulletDiameterM = Mathf.Max(1e-4f, caliberInch * BallisticMath.InchToMeters);
             float radius = _bulletDiameterM * 0.5f;
             _referenceAreaM2 = Mathf.PI * radius * radius;
+            if (autoComputeAxialInertia)
+                axialMomentOfInertia = BallisticMath.ComputeAxialMomentOfInertia(_bulletMassKg, _bulletDiameterM);
         }
 
         /// <summary>
         /// Initializes and launches the bullet from <paramref name="muzzlePosition"/> along <paramref name="aimRotation"/>
-        /// with optional scope turret offsets in radians.
+        /// with optional scope turret offsets in radians and optional measured sight height / shooter root filter.
         /// </summary>
         public void Launch(
             Vector3 muzzlePosition,
             Quaternion aimRotation,
             float turretElevationRad = 0f,
             float turretWindageRad = 0f,
-            Action<BallisticBullet> returnToPoolCallback = null)
+            Action<BallisticBullet> returnToPoolCallback = null,
+            float? sightHeightCmOverride = null,
+            Transform shooterRoot = null,
+            AmmoPreset? presetOverride = null)
         {
             _onReturnToPool = returnToPoolCallback;
+            _shooterRoot = shooterRoot;
+
+            if (presetOverride.HasValue && presetOverride.Value != AmmoPreset.Custom)
+                ammoPreset = presetOverride.Value;
+
+            if (sightHeightCmOverride.HasValue)
+                sightHeightCM = Mathf.Max(0f, sightHeightCmOverride.Value);
+
+            ApplyAmmoPresetIfNeeded();
             RecomputePhysicalConstants();
 
             // Barrel heating & cooldown (1 shot of heat dissipates every 3 seconds of idle time)
-            float timeSinceLastShot = Time.time - LastShotTime;
-            if (timeSinceLastShot > 3f)
+            if (simulateBarrelHeating)
             {
-                int cooldownShots = Mathf.FloorToInt(timeSinceLastShot / 3f);
-                GlobalShotCounter = Mathf.Max(0, GlobalShotCounter - cooldownShots);
+                float timeSinceLastShot = Time.time - LastShotTime;
+                if (timeSinceLastShot > 3f)
+                {
+                    int cooldownShots = Mathf.FloorToInt(timeSinceLastShot / 3f);
+                    GlobalShotCounter = Mathf.Max(0, GlobalShotCounter - cooldownShots);
+                }
+                // Cap barrel thermal state at 12 rapid shots so muzzle velocity stays physically realistic
+                GlobalShotCounter = Mathf.Min(GlobalShotCounter + 1, 12);
+                LastShotTime = Time.time;
+
+                float harmonicShiftMOA = (GlobalShotCounter - 1) * 0.15f;
+                float extraVelocity = (GlobalShotCounter - 1) * 2.0f;
+                currentMuzzleVelocity = baseMuzzleVelocityMS + extraVelocity;
+                LaunchWithHeat(muzzlePosition, aimRotation, turretElevationRad, turretWindageRad, harmonicShiftMOA);
             }
-            // Cap barrel thermal state at 12 rapid shots so muzzle velocity stays physically realistic
-            GlobalShotCounter = Mathf.Min(GlobalShotCounter + 1, 12);
-            LastShotTime = Time.time;
+            else
+            {
+                currentMuzzleVelocity = baseMuzzleVelocityMS;
+                LaunchWithHeat(muzzlePosition, aimRotation, turretElevationRad, turretWindageRad, 0f);
+            }
+        }
 
-            float harmonicShiftMOA = (GlobalShotCounter - 1) * 0.15f;
-            float extraVelocity = (GlobalShotCounter - 1) * 2.0f;
-            currentMuzzleVelocity = baseMuzzleVelocityMS + extraVelocity;
-
+        private void LaunchWithHeat(
+            Vector3 muzzlePosition,
+            Quaternion aimRotation,
+            float turretElevationRad,
+            float turretWindageRad,
+            float harmonicShiftMOA)
+        {
             float twistRateM = twistRateInch * BallisticMath.InchToMeters;
             float initialSpinHz = currentMuzzleVelocity / Mathf.Max(0.01f, twistRateM);
             currentSpinRad = initialSpinHz * 2f * Mathf.PI;
@@ -138,8 +202,8 @@ namespace VRAtis.Ballistics
             flightTime = 0f;
             distanceTraveled = 0f;
 
-            // Start slightly ahead of muzzle to avoid hitting shooter colliders at t=0
-            transform.position = muzzlePosition + fireDirection.normalized * 0.15f;
+            // Spawn just beyond the muzzle crown so close-range targets (>= 0.5m) are hit cleanly
+            transform.position = muzzlePosition + fireDirection.normalized * 0.05f;
             UpdateVisualRotation();
             UpdateTracerState();
 
@@ -160,7 +224,8 @@ namespace VRAtis.Ballistics
             if (!Mathf.Approximately(rho, _cachedAirDensity) ||
                 !Mathf.Approximately(sos, _cachedSpeedOfSound) ||
                 !Mathf.Approximately(currentMuzzleVelocity, _cachedMuzzleVelocity) ||
-                !Mathf.Approximately(zeroDistanceMeters, _cachedZeroDistance))
+                !Mathf.Approximately(zeroDistanceMeters, _cachedZeroDistance) ||
+                !Mathf.Approximately(sightHeightCM, _cachedSightHeight))
             {
                 _cachedBoreAngleRad = BallisticMath.SolveZeroingBoreAngleRad(
                     currentMuzzleVelocity,
@@ -178,6 +243,7 @@ namespace VRAtis.Ballistics
                 _cachedSpeedOfSound = sos;
                 _cachedMuzzleVelocity = currentMuzzleVelocity;
                 _cachedZeroDistance = zeroDistanceMeters;
+                _cachedSightHeight = sightHeightCM;
             }
 
             return _cachedBoreAngleRad;
@@ -202,60 +268,102 @@ namespace VRAtis.Ballistics
             if (!_isActive)
                 return;
 
-            float dt = Time.fixedDeltaTime;
-
-            // 4th-order Runge-Kutta (RK4) integration
-            Vector3 v1 = velocity;
-            float s1 = currentSpinRad;
-            Vector3 k1 = Calculate6DofDerivatives(v1, s1, transform.position, distanceTraveled, out float ks1);
-
-            Vector3 v2 = velocity + k1 * (dt * 0.5f);
-            float s2 = currentSpinRad + ks1 * (dt * 0.5f);
-            Vector3 k2 = Calculate6DofDerivatives(v2, s2, transform.position + v1 * (dt * 0.5f), distanceTraveled, out float ks2);
-
-            Vector3 v3 = velocity + k2 * (dt * 0.5f);
-            float s3 = currentSpinRad + ks2 * (dt * 0.5f);
-            Vector3 k3 = Calculate6DofDerivatives(v3, s3, transform.position + v2 * (dt * 0.5f), distanceTraveled, out float ks3);
-
-            Vector3 v4 = velocity + k3 * dt;
-            float s4 = currentSpinRad + ks3 * dt;
-            Vector3 k4 = Calculate6DofDerivatives(v4, s4, transform.position + v3 * dt, distanceTraveled, out float ks4);
-
-            velocity += ((k1 + 2f * k2 + 2f * k3 + k4) / 6f) * dt;
-            currentSpinRad += ((ks1 + 2f * ks2 + 2f * ks3 + ks4) / 6f) * dt;
-
-            // Raindrop stochastic perturbation
+            int subSteps = Mathf.Clamp(rk4SubSteps, 1, 8);
+            float subDt = Time.fixedDeltaTime / subSteps;
             EnvironmentManager env = EnvironmentManager.Instance;
-            if (env != null && env.isRaining)
+
+            for (int step = 0; step < subSteps; step++)
             {
-                float hitChancePerStep = (env.rainIntensityPercent * 0.01f) * dt;
-                if (UnityEngine.Random.value < hitChancePerStep)
+                Vector3 currentPos = transform.position;
+                Vector3 nextPos = currentPos;
+                Vector3 nextVel = velocity;
+                float nextSpin = currentSpinRad;
+
+                StepRk4(ref nextPos, ref nextVel, ref nextSpin, distanceTraveled, subDt);
+
+                velocity = nextVel;
+                currentSpinRad = nextSpin;
+
+                if (env != null && env.isRaining)
                 {
-                    velocity += new Vector3(
-                        UnityEngine.Random.Range(-0.5f, 0.5f),
-                        UnityEngine.Random.Range(-0.5f, 0.5f),
-                        0f);
+                    float hitChancePerStep = (env.rainIntensityPercent * 0.01f) * subDt;
+                    if (UnityEngine.Random.value < hitChancePerStep)
+                    {
+                        velocity += new Vector3(
+                            UnityEngine.Random.Range(-0.5f, 0.5f),
+                            UnityEngine.Random.Range(-0.5f, 0.5f),
+                            0f);
+                    }
+                }
+
+                if (TryRaycastSegmentNonShooter(currentPos, nextPos, out RaycastHit hit))
+                {
+                    HandleTerminalBallistics(hit);
+                    return;
+                }
+
+                distanceTraveled += Vector3.Distance(currentPos, nextPos);
+                transform.position = nextPos;
+                flightTime += subDt;
+
+                if (transform.position.y < -100f || flightTime >= maxFlightTimeSeconds || velocity.sqrMagnitude < 2500f)
+                {
+                    UpdateVisualRotation();
+                    Despawn();
+                    return;
                 }
             }
 
-            Vector3 currentPos = transform.position;
-            Vector3 nextPos = currentPos + velocity * dt;
-
-            if (distanceTraveled > 1.0f && Physics.Linecast(currentPos, nextPos, out RaycastHit hit, hitMask, QueryTriggerInteraction.Ignore))
-            {
-                HandleTerminalBallistics(hit);
-                return;
-            }
-
-            distanceTraveled += Vector3.Distance(currentPos, nextPos);
-            transform.position = nextPos;
-            flightTime += dt;
             UpdateVisualRotation();
+        }
 
-            if (transform.position.y < -100f || flightTime >= maxFlightTimeSeconds || velocity.sqrMagnitude < 2500f)
+        private void StepRk4(ref Vector3 pos, ref Vector3 vel, ref float spinRad, float distTraveled, float dt)
+        {
+            float halfDt = dt * 0.5f;
+
+            Vector3 k1v = Calculate6DofDerivatives(vel, spinRad, pos, distTraveled, out float ks1);
+            Vector3 v1 = vel + k1v * halfDt;
+            Vector3 k2v = Calculate6DofDerivatives(v1, spinRad + ks1 * halfDt, pos + vel * halfDt, distTraveled, out float ks2);
+            Vector3 v2 = vel + k2v * halfDt;
+            Vector3 k3v = Calculate6DofDerivatives(v2, spinRad + ks2 * halfDt, pos + v1 * halfDt, distTraveled, out float ks3);
+            Vector3 v3 = vel + k3v * dt;
+            Vector3 k4v = Calculate6DofDerivatives(v3, spinRad + ks3 * dt, pos + v2 * dt, distTraveled, out float ks4);
+
+            pos += ((vel + 2f * v1 + 2f * v2 + v3) / 6f) * dt;
+            vel += ((k1v + 2f * k2v + 2f * k3v + k4v) / 6f) * dt;
+            spinRad += ((ks1 + 2f * ks2 + 2f * ks3 + ks4) / 6f) * dt;
+        }
+
+        private bool TryRaycastSegmentNonShooter(Vector3 start, Vector3 end, out RaycastHit nearestValidHit)
+        {
+            nearestValidHit = default;
+            Vector3 delta = end - start;
+            float dist = delta.magnitude;
+            if (dist < 1e-5f)
+                return false;
+
+            int count = Physics.RaycastNonAlloc(start, delta / dist, RayHitBuffer, dist, hitMask, QueryTriggerInteraction.Ignore);
+            if (count <= 0)
+                return false;
+
+            float bestDist = float.MaxValue;
+            bool found = false;
+
+            for (int i = 0; i < count; i++)
             {
-                Despawn();
+                RaycastHit candidate = RayHitBuffer[i];
+                if (_shooterRoot != null && candidate.collider != null && candidate.collider.transform.IsChildOf(_shooterRoot))
+                    continue;
+
+                if (candidate.distance < bestDist)
+                {
+                    bestDist = candidate.distance;
+                    nearestValidHit = candidate;
+                    found = true;
+                }
             }
+
+            return found;
         }
 
         private Vector3 Calculate6DofDerivatives(Vector3 vVec, float spinRad, Vector3 currentPos, float distTraveled, out float spinDamping)
@@ -284,11 +392,12 @@ namespace VRAtis.Ballistics
             Vector3 vHat = relVel / relSpeed;
             Vector3 dragAccel = -dragMag * vHat;
 
-            // 2. Spin damping
-            spinDamping = (0.25f * rho * relSpeed * _referenceAreaM2 * (_bulletDiameterM * _bulletDiameterM) * cLP * spinRad) / axialMomentOfInertia;
+            // 2. Spin damping (STANAG 4355)
+            float safeInertia = Mathf.Max(1e-10f, axialMomentOfInertia);
+            spinDamping = (0.25f * rho * relSpeed * _referenceAreaM2 * (_bulletDiameterM * _bulletDiameterM) * cLP * spinRad) / safeInertia;
 
-            // 3. Yaw of repose (clamped to prevent divergence at near-vertical low speed)
-            float yawOfReposeRad = (8f * axialMomentOfInertia * spinRad * gravity) /
+            // 3. Yaw of repose (McCoy / STANAG 4355 Eq. 11.4)
+            float yawOfReposeRad = (8f * safeInertia * spinRad * gravity) /
                                    (Mathf.PI * rho * Mathf.Pow(_bulletDiameterM, 3f) * Mathf.Pow(relSpeed, 3f) * cMAlpha);
             yawOfReposeRad = Mathf.Clamp(yawOfReposeRad, -0.05f, 0.05f);
 
@@ -303,10 +412,9 @@ namespace VRAtis.Ballistics
             Vector3 xCrossV = Vector3.Cross(xVec, relVel);
             Vector3 magnusAccel = (0.25f * rho * _referenceAreaM2 * (_bulletDiameterM * _bulletDiameterM) * cNPa * spinRad * xCrossV) / _bulletMassKg;
 
-            // 5. Normal force (Lift / Spin Drift)
+            // 5. Normal force / Spin Drift lift (STANAG 4355 Eq. 11.5: dimensionless alpha_R)
             Vector3 alphaVec = xVec - Vector3.Dot(xVec, vHat) * vHat;
-            float liftScale = _bulletDiameterM;
-            Vector3 liftAccel = (0.5f * rho * _referenceAreaM2 * (relSpeed * relSpeed) * cNAlpha * alphaVec * liftScale) / _bulletMassKg;
+            Vector3 liftAccel = (0.5f * rho * _referenceAreaM2 * (relSpeed * relSpeed) * cNAlpha * alphaVec) / _bulletMassKg;
 
             // 6. Transonic buffeting (Mach 0.8 - 1.2)
             Vector3 buffetingAccel = Vector3.zero;
@@ -317,16 +425,25 @@ namespace VRAtis.Ballistics
                 float noiseX = Mathf.PerlinNoise(0f, flightTime * 50f) - 0.5f;
                 float noiseY = Mathf.PerlinNoise(flightTime * 50f, 0f) - 0.5f;
 
-                Vector3 lateral = Vector3.Cross(Vector3.up, vHat).normalized;
-                Vector3 vertical = Vector3.Cross(vHat, lateral).normalized;
-                buffetingAccel = (lateral * noiseX + vertical * noiseY) * (buffetingMag * 0.5f);
+                Vector3 lateral = Vector3.Cross(Vector3.up, vHat);
+                if (lateral.sqrMagnitude > 1e-6f)
+                {
+                    lateral.Normalize();
+                    Vector3 vertical = Vector3.Cross(vHat, lateral).normalized;
+                    buffetingAccel = (lateral * noiseX + vertical * noiseY) * (buffetingMag * 0.5f);
+                }
             }
 
-            // 7. Earth curvature gravity tilt
+            // 7. Earth curvature gravity tilt (spherical surface frame)
             float earthAngleRad = distTraveled / Mathf.Max(1000f, earthRadius);
             Vector3 gravityAccel = new Vector3(0f, -gravity * Mathf.Cos(earthAngleRad), -gravity * Mathf.Sin(earthAngleRad));
 
-            return gravityAccel + dragAccel + magnusAccel + liftAccel + buffetingAccel;
+            // 8. Coriolis & Eotvos acceleration (Unity LH frame: +2 * Cross(Omega, v))
+            Vector3 coriolisAccel = env != null
+                ? 2f * Vector3.Cross(env.GetEarthAngularVelocityUnity(), relVel)
+                : Vector3.zero;
+
+            return gravityAccel + dragAccel + magnusAccel + liftAccel + buffetingAccel + coriolisAccel;
         }
 
         private void HandleTerminalBallistics(RaycastHit hit)

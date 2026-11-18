@@ -5,6 +5,7 @@ using UnityEngine.UI;
 using VRAtis.Ballistics;
 using VRAtis.Environment;
 using VRAtis.Hardware;
+using VRAtis.Targets;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
@@ -59,6 +60,25 @@ namespace VRAtis.UI
             public Button OpticDomMinusButton;
             public Text OpticDomValueText;
             public Button OpticDomPlusButton;
+            public GameObject TargetCategoryPage;
+            public Button OpenTargetsButton;
+            public Button TargetBackButton;
+            public Text TargetSummaryText;
+            public Button[] TargetCountButtons;
+            public Image[] TargetCountBg;
+            public Button[] TargetDistButtons;
+            public Image[] TargetDistBg;
+            public Button TargetDistMinusButton;
+            public Text TargetDistValueText;
+            public Button TargetDistPlusButton;
+            public Button[] TargetSpacingButtons;
+            public Image[] TargetSpacingBg;
+            public Button TargetSpacingMinusButton;
+            public Text TargetSpacingValueText;
+            public Button TargetSpacingPlusButton;
+            public Button TargetClassicRangeButton;
+            public Image TargetClassicRangeBg;
+            public Button TargetClearMarksButton;
             public GameObject CalibrationBannerRoot;
             public RectTransform CalibrationBannerRect;
             public Image CalibrationAccentBar;
@@ -73,6 +93,13 @@ namespace VRAtis.UI
         [SerializeField] private EnvironmentManager environmentManager;
         [SerializeField] private CardboardStereoRig stereoRig;
         [SerializeField] private OpticalRifleTracker opticalTracker;
+        [SerializeField] private TargetRangeManager targetRangeManager;
+
+        private static readonly int[] TargetCountPresets = { 0, 1, 2, 3, 4, 5, 6 };
+        private static readonly int[] TargetDistancePresets = { 20, 25, 50, 100, 200 };
+        private static readonly int[] TargetSpacingPresets = { 1, 3, 5, 10, 20, 30 };
+        private static readonly Color ActiveChipColor = new Color(0.24f, 0.72f, 0.56f, 0.96f);
+        private static readonly Color InactiveChipColor = new Color(0.11f, 0.16f, 0.22f, 0.92f);
 
         [Header("Ana UI Kökü")]
         [SerializeField] private RectTransform primaryEyeRoot;
@@ -115,6 +142,8 @@ namespace VRAtis.UI
                 stereoRig = FindAnyObjectByType<CardboardStereoRig>();
             if (opticalTracker == null)
                 opticalTracker = FindAnyObjectByType<OpticalRifleTracker>();
+            if (targetRangeManager == null)
+                targetRangeManager = FindAnyObjectByType<TargetRangeManager>();
 
             if (primaryEyeRoot == null)
                 primaryEyeRoot = transform.Find("PrimaryEye_UIRoot") as RectTransform;
@@ -150,6 +179,7 @@ namespace VRAtis.UI
             SyncTimeWidgetsFromScene();
             SyncVrWidgetsToViews();
             SyncOpticalWidgetsToViews();
+            SyncTargetWidgetsToViews();
             ApplyStereoLayoutIfNeeded(force: true);
             SyncCalibrationBannerToViews();
         }
@@ -204,25 +234,31 @@ namespace VRAtis.UI
 
         public void ShowMainCategoryPage()
         {
-            SetCategoryPageActive(showMain: true, showWeather: false, showOptical: false);
+            SetCategoryPageActive(showMain: true, showWeather: false, showOptical: false, showTargets: false);
             SyncVrWidgetsToViews();
         }
 
         public void ShowWeatherCategoryPage()
         {
-            SetCategoryPageActive(showMain: false, showWeather: true, showOptical: false);
+            SetCategoryPageActive(showMain: false, showWeather: true, showOptical: false, showTargets: false);
             SyncWeatherTogglesToViews();
             SyncTimeWidgetsFromScene();
         }
 
         public void ShowOpticalCategoryPage()
         {
-            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: true);
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: true, showTargets: false);
             _nextOpticalUiRefreshTime = 0f;
             SyncOpticalWidgetsToViews();
         }
 
-        private void SetCategoryPageActive(bool showMain, bool showWeather, bool showOptical)
+        public void ShowTargetCategoryPage()
+        {
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargets: true);
+            SyncTargetWidgetsToViews();
+        }
+
+        private void SetCategoryPageActive(bool showMain, bool showWeather, bool showOptical, bool showTargets)
         {
             for (int i = 0; i < _views.Count; i++)
             {
@@ -232,6 +268,8 @@ namespace VRAtis.UI
                     _views[i].WeatherCategoryPage.SetActive(showWeather);
                 if (_views[i].OpticalCategoryPage != null)
                     _views[i].OpticalCategoryPage.SetActive(showOptical);
+                if (_views[i].TargetCategoryPage != null)
+                    _views[i].TargetCategoryPage.SetActive(showTargets);
             }
 
             RefreshOpticalPreviewActiveState();
@@ -257,6 +295,7 @@ namespace VRAtis.UI
             Transform mainTr = contentTr != null ? contentTr.Find("MainCategoryPage") : null;
             Transform weatherTr = contentTr != null ? contentTr.Find("WeatherCategoryPage") : null;
             Transform opticalTr = contentTr != null ? contentTr.Find("OpticalCategoryPage") : null;
+            Transform targetTr = contentTr != null ? contentTr.Find("TargetCategoryPage") : null;
             Transform vrCardTr = mainTr != null ? mainTr.Find("VRCalibrationCard") : null;
 
             UiView view = new UiView
@@ -270,10 +309,29 @@ namespace VRAtis.UI
                 MainCategoryPage = mainTr != null ? mainTr.gameObject : null,
                 WeatherCategoryPage = weatherTr != null ? weatherTr.gameObject : null,
                 OpticalCategoryPage = opticalTr != null ? opticalTr.gameObject : null,
+                TargetCategoryPage = targetTr != null ? targetTr.gameObject : null,
                 OpenWeatherButton = FindChildComponent<Button>(mainTr, "WeatherMenuButton"),
                 OpenOpticalButton = FindChildComponent<Button>(mainTr, "OpticalMenuButton"),
+                OpenTargetsButton = FindChildComponent<Button>(mainTr, "TargetsMenuButton"),
                 WeatherBackButton = FindChildComponent<Button>(weatherTr, "WeatherSubHeader/BackButton"),
                 OpticalBackButton = FindChildComponent<Button>(opticalTr, "OpticSubHeader/BackButton"),
+                TargetBackButton = FindChildComponent<Button>(targetTr, "TargetSubHeader/BackButton"),
+                TargetSummaryText = FindChildComponent<Text>(targetTr, "TargetSummaryBox/TargetSummaryText"),
+                TargetCountButtons = new Button[TargetCountPresets.Length],
+                TargetCountBg = new Image[TargetCountPresets.Length],
+                TargetDistButtons = new Button[TargetDistancePresets.Length],
+                TargetDistBg = new Image[TargetDistancePresets.Length],
+                TargetDistMinusButton = FindChildComponent<Button>(targetTr, "TargetDistStepRow/DistMinusButton"),
+                TargetDistValueText = FindChildComponent<Text>(targetTr, "TargetDistStepRow/ValueBox/DistValueText"),
+                TargetDistPlusButton = FindChildComponent<Button>(targetTr, "TargetDistStepRow/DistPlusButton"),
+                TargetSpacingButtons = new Button[TargetSpacingPresets.Length],
+                TargetSpacingBg = new Image[TargetSpacingPresets.Length],
+                TargetSpacingMinusButton = FindChildComponent<Button>(targetTr, "TargetSpacingStepRow/SpacingMinusButton"),
+                TargetSpacingValueText = FindChildComponent<Text>(targetTr, "TargetSpacingStepRow/ValueBox/SpacingValueText"),
+                TargetSpacingPlusButton = FindChildComponent<Button>(targetTr, "TargetSpacingStepRow/SpacingPlusButton"),
+                TargetClassicRangeButton = FindChildComponent<Button>(targetTr, "TargetUtilityRow/ClassicRangeButton"),
+                TargetClassicRangeBg = FindChildComponent<Image>(targetTr, "TargetUtilityRow/ClassicRangeButton"),
+                TargetClearMarksButton = FindChildComponent<Button>(targetTr, "TargetUtilityRow/ClearMarksButton"),
                 CloseWindowButton = FindChildComponent<Button>(winTr, "HeaderBar/CloseButton"),
                 RainCheckbox = FindChildComponent<Toggle>(weatherTr, "RainCheckbox"),
                 FogCheckbox = FindChildComponent<Toggle>(weatherTr, "FogCheckbox"),
@@ -311,6 +369,27 @@ namespace VRAtis.UI
             for (int i = 0; i < view.TimePresetToggles.Length; i++)
                 view.TimePresetToggles[i] = FindChildComponent<Toggle>(weatherTr, $"TimePreset_{i + 1}");
 
+            for (int i = 0; i < TargetCountPresets.Length; i++)
+            {
+                string path = $"TargetCountRow/CountBtn_{TargetCountPresets[i]}";
+                view.TargetCountButtons[i] = FindChildComponent<Button>(targetTr, path);
+                view.TargetCountBg[i] = FindChildComponent<Image>(targetTr, path);
+            }
+
+            for (int i = 0; i < TargetDistancePresets.Length; i++)
+            {
+                string path = $"TargetDistPresetRow/DistBtn_{TargetDistancePresets[i]}";
+                view.TargetDistButtons[i] = FindChildComponent<Button>(targetTr, path);
+                view.TargetDistBg[i] = FindChildComponent<Image>(targetTr, path);
+            }
+
+            for (int i = 0; i < TargetSpacingPresets.Length; i++)
+            {
+                string path = $"TargetSpacingPresetRow/SpacingBtn_{TargetSpacingPresets[i]}";
+                view.TargetSpacingButtons[i] = FindChildComponent<Button>(targetTr, path);
+                view.TargetSpacingBg[i] = FindChildComponent<Image>(targetTr, path);
+            }
+
             BindViewListeners(view);
             return view;
         }
@@ -320,8 +399,10 @@ namespace VRAtis.UI
             BindClick(view.GearButton, ToggleWindow);
             BindClick(view.OpenWeatherButton, ShowWeatherCategoryPage);
             BindClick(view.OpenOpticalButton, ShowOpticalCategoryPage);
+            BindClick(view.OpenTargetsButton, ShowTargetCategoryPage);
             BindClick(view.WeatherBackButton, ShowMainCategoryPage);
             BindClick(view.OpticalBackButton, ShowMainCategoryPage);
+            BindClick(view.TargetBackButton, ShowMainCategoryPage);
             BindClick(view.CloseWindowButton, CloseWindow);
             BindClick(view.OpticZeroButton, HandleOpticZero);
             BindClick(view.OpticModeButton, CycleOpticMode);
@@ -331,6 +412,32 @@ namespace VRAtis.UI
             BindClick(view.OpticDomMinusButton, () => NudgeOpticDom(-5));
             BindClick(view.OpticDomPlusButton, () => NudgeOpticDom(+5));
             BindToggle(view.OpticEnableCheckbox, HandleOpticEnableChanged);
+
+            for (int i = 0; i < TargetCountPresets.Length; i++)
+            {
+                int val = TargetCountPresets[i];
+                BindClick(view.TargetCountButtons[i], () => HandleTargetCountSelected(val));
+            }
+
+            for (int i = 0; i < TargetDistancePresets.Length; i++)
+            {
+                float val = TargetDistancePresets[i];
+                BindClick(view.TargetDistButtons[i], () => HandleTargetDistanceSelected(val));
+            }
+
+            BindClick(view.TargetDistMinusButton, () => NudgeTargetDistance(-5f));
+            BindClick(view.TargetDistPlusButton, () => NudgeTargetDistance(+5f));
+
+            for (int i = 0; i < TargetSpacingPresets.Length; i++)
+            {
+                float val = TargetSpacingPresets[i];
+                BindClick(view.TargetSpacingButtons[i], () => HandleTargetSpacingSelected(val));
+            }
+
+            BindClick(view.TargetSpacingMinusButton, () => NudgeTargetSpacing(-1f));
+            BindClick(view.TargetSpacingPlusButton, () => NudgeTargetSpacing(+1f));
+            BindClick(view.TargetClassicRangeButton, HandleClassicRangeSelected);
+            BindClick(view.TargetClearMarksButton, HandleClearTargetMarks);
 
             if (view.RainCheckbox != null)
             {
@@ -640,6 +747,119 @@ namespace VRAtis.UI
             if (opticalTracker == null)
                 opticalTracker = FindAnyObjectByType<OpticalRifleTracker>();
             return opticalTracker;
+        }
+
+        private TargetRangeManager ResolveTargetRangeManager()
+        {
+            if (targetRangeManager == null)
+                targetRangeManager = FindAnyObjectByType<TargetRangeManager>();
+            return targetRangeManager;
+        }
+
+        private void HandleTargetCountSelected(int count)
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.SetTargetCount(count);
+            SyncTargetWidgetsToViews();
+        }
+
+        private void HandleTargetDistanceSelected(float meters)
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.SetDistanceMeters(meters);
+            SyncTargetWidgetsToViews();
+        }
+
+        private void NudgeTargetDistance(float deltaMeters)
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.NudgeDistanceMeters(deltaMeters);
+            SyncTargetWidgetsToViews();
+        }
+
+        private void HandleTargetSpacingSelected(float meters)
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.SetSpacingMeters(meters);
+            SyncTargetWidgetsToViews();
+        }
+
+        private void NudgeTargetSpacing(float deltaMeters)
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.NudgeSpacingMeters(deltaMeters);
+            SyncTargetWidgetsToViews();
+        }
+
+        private void HandleClassicRangeSelected()
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.ActivateClassicRange();
+            SyncTargetWidgetsToViews();
+        }
+
+        private void HandleClearTargetMarks()
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.ClearAllImpactMarksAndSwings();
+        }
+
+        private void SyncTargetWidgetsToViews()
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            bool customActive = mgr != null && mgr.IsCustomDrillActive;
+            int count = mgr != null ? mgr.TargetCount : 1;
+            int distInt = mgr != null ? Mathf.RoundToInt(mgr.DistanceMeters) : 25;
+            int spacingInt = mgr != null ? Mathf.RoundToInt(mgr.SpacingMeters) : 5;
+
+            string summary;
+            if (mgr == null)
+                summary = "TargetRangeManager bulunamadı";
+            else if (!customActive)
+                summary = "Aktif: Klasik Poligon (25 / 100 / 300 / 500 m)";
+            else if (count <= 0)
+                summary = "Aktif: Sahada Hedef Yok (0) — Drill için 1-6 seçin";
+            else
+                summary = $"Drill: {count} Hedef  •  {distInt} m Mesafe  •  {spacingInt} m Aralık";
+
+            for (int v = 0; v < _views.Count; v++)
+            {
+                UiView view = _views[v];
+                if (view.TargetSummaryText != null)
+                    view.TargetSummaryText.text = summary;
+                if (view.TargetDistValueText != null)
+                    view.TargetDistValueText.text = $"{distInt} m";
+                if (view.TargetSpacingValueText != null)
+                    view.TargetSpacingValueText.text = $"{spacingInt} m aralık";
+
+                for (int i = 0; i < TargetCountPresets.Length; i++)
+                {
+                    if (view.TargetCountBg != null && view.TargetCountBg[i] != null)
+                        view.TargetCountBg[i].color = (customActive && count == TargetCountPresets[i]) ? ActiveChipColor : InactiveChipColor;
+                }
+
+                for (int i = 0; i < TargetDistancePresets.Length; i++)
+                {
+                    if (view.TargetDistBg != null && view.TargetDistBg[i] != null)
+                        view.TargetDistBg[i].color = (customActive && distInt == TargetDistancePresets[i]) ? ActiveChipColor : InactiveChipColor;
+                }
+
+                for (int i = 0; i < TargetSpacingPresets.Length; i++)
+                {
+                    if (view.TargetSpacingBg != null && view.TargetSpacingBg[i] != null)
+                        view.TargetSpacingBg[i].color = (customActive && spacingInt == TargetSpacingPresets[i]) ? ActiveChipColor : InactiveChipColor;
+                }
+
+                if (view.TargetClassicRangeBg != null)
+                    view.TargetClassicRangeBg.color = !customActive ? ActiveChipColor : InactiveChipColor;
+            }
         }
 
         private void RefreshOpticalPreviewActiveState()

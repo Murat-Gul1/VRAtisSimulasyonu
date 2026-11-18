@@ -8,19 +8,85 @@ namespace VRAtis.Ballistics
         G7
     }
 
+    public enum AmmoPreset
+    {
+        Nato762_M118LR_175gr,
+        Nato556_M855_62gr,
+        Custom
+    }
+
+    public struct AmmoPresetSpec
+    {
+        public string Name;
+        public float BulletWeightGrain;
+        public float CaliberInch;
+        public float MuzzleVelocityMS;
+        public DragModel DragModel;
+        public float FormFactor;
+        public float TwistRateInch;
+    }
+
     /// <summary>
     /// Stateless ballistic math, atmospheric physics, drag tables (G1 & G7),
-    /// unit conversions (MOA / MRAD / metric), and bore-zeroing solver.
+    /// unit conversions (MOA / MRAD / metric), and RK4 bore-zeroing solver.
     /// </summary>
     public static class BallisticMath
     {
         public const float StandardGravity = 9.80665f;      // m/s^2
+        public const float EarthAngularSpeedRadS = 7.2921159e-5f; // rad/s
         public const float GasConstantDryAir = 287.058f;    // J/(kg*K)
         public const float GasConstantWaterVapor = 461.495f;// J/(kg*K)
         public const float GrainToKg = 0.00006479891f;
         public const float InchToMeters = 0.0254f;
         public const float MetersToYards = 1.0936133f;
         public const float MMToInches = 0.03937008f;
+
+        public static AmmoPresetSpec GetAmmoPresetSpec(AmmoPreset preset)
+        {
+            if (preset == AmmoPreset.Nato556_M855_62gr)
+            {
+                return new AmmoPresetSpec
+                {
+                    Name = "5.56x45 NATO M855 62gr",
+                    BulletWeightGrain = 62f,
+                    CaliberInch = 0.224f,
+                    MuzzleVelocityMS = 940f,
+                    DragModel = DragModel.G7,
+                    FormFactor = 1.169f, // G7 BC ~ 0.151 (SD 0.1765 / 0.151)
+                    TwistRateInch = 7f
+                };
+            }
+
+            return new AmmoPresetSpec
+            {
+                Name = "7.62x51 M118LR 175gr",
+                BulletWeightGrain = 175f,
+                CaliberInch = 0.308f,
+                MuzzleVelocityMS = 792.5f,
+                DragModel = DragModel.G7,
+                FormFactor = 1.085f, // G7 BC ~ 0.243 (SD 0.2635 / 0.243)
+                TwistRateInch = 12f
+            };
+        }
+
+        /// <summary>
+        /// Axial moment of inertia Ix for a spitzer boat-tail rifle projectile (~0.42 * m * r^2).
+        /// </summary>
+        public static float ComputeAxialMomentOfInertia(float massKg, float diameterM)
+        {
+            float r = diameterM * 0.5f;
+            return Mathf.Max(1e-10f, 0.42f * massKg * r * r);
+        }
+
+        /// <summary>
+        /// Converts sectional density and standard imperial ballistic coefficient (lb/in^2)
+        /// into dimensionless form factor i = SD / BC.
+        /// </summary>
+        public static float FormFactorFromImperialBC(float bulletWeightGrain, float caliberInch, float ballisticCoefficient)
+        {
+            float sd = (bulletWeightGrain / 7000f) / Mathf.Max(1e-5f, caliberInch * caliberInch);
+            return sd / Mathf.Max(0.02f, ballisticCoefficient);
+        }
 
         private static readonly (float mach, float cd)[] G1Table =
         {
@@ -124,14 +190,14 @@ namespace VRAtis.Ballistics
 
         /// <summary>
         /// Computes the upward bore elevation angle (radians) required to zero at <paramref name="zeroDistanceMeters"/>
-        /// accounting for sight height above bore, gravity, and aerodynamic drag.
+        /// using 4th-order Runge-Kutta integration and iterative secant refinement.
         /// </summary>
         public static float SolveZeroingBoreAngleRad(
             float muzzleVelocityMS,
             float bulletMassKg,
             float referenceAreaM2,
             DragModel dragModel,
-            float formFactorOrInverseBC,
+            float formFactor,
             float sightHeightMeters,
             float zeroDistanceMeters,
             float airDensity,
@@ -141,34 +207,69 @@ namespace VRAtis.Ballistics
             if (zeroDistanceMeters <= 1f || muzzleVelocityMS <= 10f)
                 return 0f;
 
-            float simTime = 0f;
-            float simX = 0f;
-            float simZ = 0f;
-            float simVx = muzzleVelocityMS;
-            float simVz = 0f;
-            const float dt = 0.001f;
+            float safeFormFactor = Mathf.Max(0.05f, formFactor);
+            float dragScale = (0.5f * airDensity * referenceAreaM2 * safeFormFactor) / Mathf.Max(1e-6f, bulletMassKg);
 
-            while (simX < zeroDistanceMeters && simTime < 5f)
+            Vector2 CalcAccel(Vector2 vel)
             {
-                float speed = Mathf.Sqrt(simVx * simVx + simVz * simVz);
-                if (speed < 10f) break;
+                float speed = vel.magnitude;
+                if (speed < 0.01f)
+                    return new Vector2(0f, -gravity);
 
-                float mach = speed / speedOfSound;
-                float cd = GetCd(dragModel, mach) * formFactorOrInverseBC;
-                float dragAccelMag = (0.5f * airDensity * referenceAreaM2 * cd) / bulletMassKg * (speed * speed);
-
-                float dragAx = -dragAccelMag * (simVx / speed);
-                float dragAz = -dragAccelMag * (simVz / speed);
-
-                simVx += dragAx * dt;
-                simVz += (dragAz - gravity) * dt;
-                simX += simVx * dt;
-                simZ += simVz * dt;
-                simTime += dt;
+                float mach = speed / Mathf.Max(100f, speedOfSound);
+                float cd = GetCd(dragModel, mach);
+                float dragDecel = dragScale * cd * speed;
+                return new Vector2(-dragDecel * vel.x, -dragDecel * vel.y - gravity);
             }
 
-            float totalVerticalComp = sightHeightMeters + Mathf.Abs(simZ);
-            return Mathf.Atan(totalVerticalComp / zeroDistanceMeters);
+            float SimulateHeightAtZero(float angleRad)
+            {
+                Vector2 pos = Vector2.zero;
+                Vector2 vel = new Vector2(Mathf.Cos(angleRad), Mathf.Sin(angleRad)) * muzzleVelocityMS;
+                const float dt = 0.005f;
+                float t = 0f;
+
+                while (pos.x < zeroDistanceMeters && t < 5f && vel.x > 5f)
+                {
+                    Vector2 k1v = CalcAccel(vel);
+                    Vector2 v1 = vel + k1v * (dt * 0.5f);
+                    Vector2 k2v = CalcAccel(v1);
+                    Vector2 v2 = vel + k2v * (dt * 0.5f);
+                    Vector2 k3v = CalcAccel(v2);
+                    Vector2 v3 = vel + k3v * dt;
+                    Vector2 k4v = CalcAccel(v3);
+
+                    Vector2 nextPos = pos + ((vel + 2f * v1 + 2f * v2 + v3) / 6f) * dt;
+                    Vector2 nextVel = vel + ((k1v + 2f * k2v + 2f * k3v + k4v) / 6f) * dt;
+                    t += dt;
+
+                    if (nextPos.x >= zeroDistanceMeters)
+                    {
+                        float frac = (zeroDistanceMeters - pos.x) / Mathf.Max(1e-5f, nextPos.x - pos.x);
+                        return Mathf.Lerp(pos.y, nextPos.y, frac);
+                    }
+
+                    pos = nextPos;
+                    vel = nextVel;
+                }
+
+                return pos.y;
+            }
+
+            float approxTime = zeroDistanceMeters / muzzleVelocityMS;
+            float angle = Mathf.Atan((sightHeightMeters + 0.5f * gravity * approxTime * approxTime) / zeroDistanceMeters);
+
+            for (int iter = 0; iter < 4; iter++)
+            {
+                float yAtZero = SimulateHeightAtZero(angle);
+                float errorM = sightHeightMeters - yAtZero;
+                if (Mathf.Abs(errorM) < 0.00005f)
+                    break;
+
+                angle += Mathf.Atan2(errorM, zeroDistanceMeters);
+            }
+
+            return angle;
         }
 
         public static float InchesToMOA(float inches, float rangeYards)
