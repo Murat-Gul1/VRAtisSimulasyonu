@@ -63,12 +63,12 @@ const int   ACCEL_SETTLE_SAMPLES_REQ  = 120;    // Hareket bitiminde 120 ms titr
 const float KP_MAG_YAW                = 0.15f;  // Yalnız '9' komutuyla 9-DOF açılırsa yumuşak pusula kazancı
 const float KI_MAG_YAW                = 0.02f;
 
-// Kademe 2: Katı Masa / Destekli Sabitlik Kilidi (0.00 deg/s kayma)
-const float DESK_ACCEL_DELTA_G        = 0.015f;
-const float DESK_GYRO_DEV_DEG_S       = 0.65f;
-const float DESK_MAX_DRIFT_DEG_S      = 1.60f;
-const int   DESK_STILL_SAMPLES_REQ    = 300;    // 300 ms kesintisiz sabitlik (1000 Hz)
-const float DESK_LEARN_ALPHA          = 0.012f; // 1000 Hz'de ~0.08 sn hızlı ofset kilidi
+// Kademe 2: Katı Masa / Destekli Sabitlik Kilidi (Elde ince nişanda asla yanlışlıkla devreye girmez!)
+const float DESK_ACCEL_DELTA_G        = 0.006f;
+const float DESK_GYRO_DEV_DEG_S       = 0.22f;
+const float DESK_MAX_DRIFT_DEG_S      = 1.20f;
+const int   DESK_STILL_SAMPLES_REQ    = 1500;   // 1.5 sn kesintisiz katı masa hareketsizliği şartı
+const float DESK_LEARN_ALPHA          = 0.008f; // Yalnız sert masa üstünde yumuşak ofset kilidi
 
 // Kademe 1: Elde Nişan Ultra-Korumalı Termal Telafi (İnce nişanı asla bias sanıp ters kayma üretmez!)
 const float AIM_ACCEL_DELTA_G         = 0.035f;
@@ -823,22 +823,96 @@ void configureMpuRegisters(bool doSoftReset) {
   writeI2CReg(mpuAddr, 0x1D, 0x03); // İvmeölçer DLPF = 41 Hz
 }
 
-void initSensors() {
+bool sensorInitialized = false;
+
+// 9-darbe SCL bus temizleme + STOP koşulu: reset/güç kesintisi sırasında MPU'nun SDA'yı LOW kilitlemesini açar
+void pulseI2cBusClear() {
+  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+  pinMode(I2C_SCL_PIN, OUTPUT);
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(I2C_SCL_PIN, LOW);
+    delayMicroseconds(6);
+    digitalWrite(I2C_SCL_PIN, HIGH);
+    delayMicroseconds(6);
+  }
+  pinMode(I2C_SDA_PIN, OUTPUT);
+  digitalWrite(I2C_SDA_PIN, LOW);
+  delayMicroseconds(6);
+  digitalWrite(I2C_SCL_PIN, HIGH);
+  delayMicroseconds(6);
+  digitalWrite(I2C_SDA_PIN, HIGH);
+  delayMicroseconds(6);
+  pinMode(I2C_SDA_PIN, INPUT_PULLUP);
+}
+
+// Uzun jumper kabloda anlık I2C kilitlenmesi (SDA takılması / NACK) olursa 9-darbe bus kurtarma + yeniden başlatma
+void recoverI2cBusAndMpu() {
+  Wire.end();
+  pulseI2cBusClear();
+
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   Wire.setClock(I2C_CLOCK_HZ);
-  Wire.setTimeOut(10);
+  Wire.setTimeOut(5);
 
+  bool found = false;
   Wire.beginTransmission(0x68);
   if (Wire.endTransmission() == 0) {
     mpuAddr = 0x68;
+    found = true;
   } else {
     Wire.beginTransmission(0x69);
     if (Wire.endTransmission() == 0) {
       mpuAddr = 0x69;
-    } else {
-      Serial.println("[HATA] MPU-9250/6500 bulunamadi! I2C kablolarini kontrol edin.");
-      return;
+      found = true;
     }
+  }
+  if (!found) return;
+
+  configureMpuRegisters(false);
+  if (!sensorInitialized) {
+    loadGyroCalFromFlash();
+    loadMagCalFromFlash();
+    if (hasFlashGyroCal) {
+      gxOffset = baseGxOffset;
+      gyOffset = baseGyOffset;
+      gzOffset = baseGzOffset;
+    }
+    sensorInitialized = true;
+    Serial.println("[KURTARMA] MPU-9250/6500 sonradan uyandi -> Flash kalibrasyonu yuklendi!");
+  }
+}
+
+void initSensors() {
+  bool found = false;
+  for (int attempt = 0; attempt < 5 && !found; attempt++) {
+    if (attempt > 0) {
+      Wire.end();
+      delay(50);
+    }
+    // Reset sonrası MPU-9250 SDA hattını kilitlemiş olabileceği için her zaman önce 9-darbe bus temizliği yap
+    pulseI2cBusClear();
+
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.setClock(I2C_CLOCK_HZ);
+    Wire.setTimeOut(10);
+    delay(20);
+
+    Wire.beginTransmission(0x68);
+    if (Wire.endTransmission() == 0) {
+      mpuAddr = 0x68;
+      found = true;
+    } else {
+      Wire.beginTransmission(0x69);
+      if (Wire.endTransmission() == 0) {
+        mpuAddr = 0x69;
+        found = true;
+      }
+    }
+  }
+
+  if (!found) {
+    Serial.println("[HATA] MPU-9250/6500 5 denemede bulunamadi! I2C kablolarini kontrol edin.");
+    return;
   }
 
   configureMpuRegisters(true);
@@ -847,6 +921,7 @@ void initSensors() {
   hasMagnetometer = initAK8963();
   loadGyroCalFromFlash();
   loadMagCalFromFlash();
+  sensorInitialized = true;
 
   Serial.println("============================================================");
   Serial.printf("Sensor Adresi : 0x%02X | WHO_AM_I: 0x%02X\n", mpuAddr, whoAmI);
@@ -1233,8 +1308,8 @@ void imuTaskFn(void* param) {
       float gz = gzDeg * DEG_TO_RAD_F;
       float gyroMag = sqrtf(gx * gx + gy * gy + gz * gz);
 
-      // Masa kilidinde kalan mikro-gürültüyü tamamen sıfırla
-      if (activeZuptTier == 2 && gyroMag < (0.55f * DEG_TO_RAD_F)) {
+      // Masa kilidinde kalan çok küçük gürültüyü sıfırla (ince nişan hareketini asla yutmaması için 0.12 deg/s)
+      if (activeZuptTier == 2 && gyroMag < (0.12f * DEG_TO_RAD_F)) {
         gx = gy = gz = 0.0f;
         gxDeg = gyDeg = gzDeg = 0.0f;
         gyroMag = 0.0f;
@@ -1299,6 +1374,11 @@ void imuTaskFn(void* param) {
       consecI2cErr++;
       if (consecI2cErr >= 5) {
         hasPrevGyro = false;
+      }
+      if (consecI2cErr == 6 || (consecI2cErr > 6 && (consecI2cErr % 80 == 0))) {
+        recoverI2cBusAndMpu();
+        pwrResetLocal++;
+        lastImuUs = micros();
       }
       uint32_t nowMs = millis();
       if (nowMs - lastStatResetMs >= DEBUG_INTERVAL_MS) {
@@ -1376,12 +1456,31 @@ void connectBestWifi() {
     IPAddress gw = WiFi.gatewayIP();
     targetIp = (gw != IPAddress(0, 0, 0, 0)) ? gw : WiFi.broadcastIP();
   } else {
-    IPAddress bcast = WiFi.broadcastIP();
-    targetIp = (bcast != IPAddress(0, 0, 0, 0)) ? bcast : HOME_PC_IP;
+    // Ev Wi-Fi modemleri Broadcast (192.168.1.255) paketlerini 100ms DTIM beacon araliginda (10 Hz)
+    // biriktirip toplu saldigi icin dogrudan Unicast (HOME_PC_IP) kullanilir + otomatik Unity kesfi acilir.
+    targetIp = HOME_PC_IP;
   }
 
+  udp.begin(UDP_PORT);
+
   Serial.println("\n[OK] Wi-Fi baglandi! ESP32 IP: " + WiFi.localIP().toString()
-                 + " -> Hedef UDP IP: " + targetIp.toString() + ":" + String(UDP_PORT));
+                 + " -> Hedef UDP IP (Unicast): " + targetIp.toString() + ":" + String(UDP_PORT));
+}
+
+void pollUnityClientDiscovery() {
+  int pktSize = udp.parsePacket();
+  while (pktSize > 0) {
+    char buf[8];
+    int r = udp.read(buf, sizeof(buf));
+    if (r >= 4 && buf[0] == 'V' && buf[1] == 'R' && buf[2] == 'A' && buf[3] == 'T') {
+      IPAddress remote = udp.remoteIP();
+      if (remote != IPAddress(0, 0, 0, 0) && remote != WiFi.localIP() && remote != targetIp) {
+        targetIp = remote;
+        Serial.println("[UNICAST KILIT] Unity istemcisi otomatik kesfedildi -> " + targetIp.toString());
+      }
+    }
+    pktSize = udp.parsePacket();
+  }
 }
 
 void handleSerialCommands() {
@@ -1469,12 +1568,21 @@ void netTaskFn(void* param) {
       sendUDPPacket(isTriggerShot, snap);
     }
 
-    // 4) Seri komutlar ve 1 Hz teşhis çıktısı
+    // 4) Seri komutlar, Unity Unicast keşfi ve 1 Hz teşhis çıktısı
     handleSerialCommands();
+    pollUnityClientDiscovery();
 
     uint32_t nowMs = millis();
     if (nowMs - lastDebugMs >= DEBUG_INTERVAL_MS) {
       lastDebugMs = nowMs;
+
+      // 1 Hz hafif alt-ag kesif paketi: PC veya Telefon farkli bir IP almissa Unity "VRAT" yaniti donup Unicast'i kendine kilitler
+      IPAddress bcast = WiFi.broadcastIP();
+      if (bcast != IPAddress(0, 0, 0, 0) && bcast != targetIp) {
+        udp.beginPacket(bcast, UDP_PORT);
+        udp.write((const uint8_t*)&packet, sizeof(packet));
+        udp.endPacket();
+      }
 
       SharedImuSnapshot snap;
       portENTER_CRITICAL(&stateMux);

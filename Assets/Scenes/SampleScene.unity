@@ -8365,7 +8365,7 @@ MonoBehaviour:
   preferGameRotationVector: 1
   requestedSensorRateHz: 200
   autoZeroYawOnFirstReading: 1
-  enableAdaptiveSmoothing: 1
+  enableAdaptiveSmoothing: 0
   minSmoothingSpeed: 32
   maxSmoothingSpeed: 125
   fastTurnSpeedDegPerSec: 45
@@ -31078,16 +31078,16 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Hardware.RifleOrientationController
   receiver: {fileID: 841191213}
   headCameraTransform: {fileID: 330585546}
-  mountPreset: 0
+  mountPreset: 1
   unityAxisFromSensor: {x: 1, y: 3, z: 2}
   invertPitch: 0
   invertYaw: 0
   invertRoll: 0
   mountOffsetEuler: {x: 0, y: 0, z: 0}
   autoZeroYawOnFirstPacket: 1
-  enableWifiGapPrediction: 1
-  maxPredictionMs: 65
-  enableAdaptiveSmoothing: 1
+  enableWifiGapPrediction: 0
+  maxPredictionMs: 25
+  enableAdaptiveSmoothing: 0
   minSmoothingSpeed: 32
   maxSmoothingSpeed: 95
   fastTurnSpeedDegPerSec: 90
@@ -31171,15 +31171,15 @@ MonoBehaviour:
   enableBodyYawFollowFallback: 1
   readyLocalOffsetMeters: {x: 0.08, y: -0.14, z: 0.25}
   bodyYawFreeLookDeadzoneDeg: 22
-  minPositionSmoothSpeed: 12
-  maxPositionSmoothSpeed: 38
+  minPositionSmoothSpeed: 35
+  maxPositionSmoothSpeed: 90
   maxSingleFrameJumpMeters: 0.18
   autoPowerRedDotNearEye: 0
   redDotWakeLateralMeters: 0.15
   vrInsertGraceSeconds: 5
   steadyHoldSeconds: 5
   completedBannerDurationSeconds: 2
-  enableOpticalYawFusion: 1
+  enableOpticalYawFusion: 0
   adsYawFusionTimeConstantSec: 0.45
   readyYawFusionTimeConstantSec: 1.4
   opticalYawDeadbandDeg: 0.22

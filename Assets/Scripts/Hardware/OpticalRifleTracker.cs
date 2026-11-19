@@ -107,10 +107,10 @@ namespace VRAtis.Hardware
         [SerializeField] private float bodyYawFreeLookDeadzoneDeg = 22f;
 
         [Header("120Hz Yumuşatma ve Red Dot Otomatik Açma")]
-        [Range(4f, 45f)]
-        [SerializeField] private float minPositionSmoothSpeed = 12f;
-        [Range(15f, 90f)]
-        [SerializeField] private float maxPositionSmoothSpeed = 38f;
+        [Range(4f, 60f)]
+        [SerializeField] private float minPositionSmoothSpeed = 35f;
+        [Range(15f, 120f)]
+        [SerializeField] private float maxPositionSmoothSpeed = 90f;
         [SerializeField] private float maxSingleFrameJumpMeters = 0.18f;
         [SerializeField] private bool autoPowerRedDotNearEye = false;
         [Range(0.06f, 0.25f)]
@@ -409,6 +409,10 @@ namespace VRAtis.Hardware
 
         private void Awake()
         {
+            // Eski sahne kaydından kalan Optik Yaw Füzyonu nişan alırken Red Dot'u yavaşça geri sürüklediği için kapatılır.
+            enableOpticalYawFusion = false;
+            IsOpticalYawFusionActive = false;
+
             if (headCameraTransform == null && Camera.main != null)
                 headCameraTransform = Camera.main.transform;
 

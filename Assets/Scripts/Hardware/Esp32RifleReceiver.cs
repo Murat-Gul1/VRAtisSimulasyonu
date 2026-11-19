@@ -77,6 +77,7 @@ namespace VRAtis.Hardware
         // Pre-allocated receive buffers (0 Bytes GC Allocation in ReceiveLoop)
         private readonly byte[] _recvBuffer = new byte[64];
         private readonly byte[] _latestValidPacket = new byte[MaxPacketSizeBytes];
+        private static readonly byte[] UnicastReplyMagic = { (byte)'V', (byte)'R', (byte)'A', (byte)'T' };
 
         // Shared state guarded by _stateLock
         private readonly object _stateLock = new object();
@@ -189,14 +190,28 @@ namespace VRAtis.Hardware
         private void ReceiveLoop()
         {
             long prevPacketTicks = 0;
+            EndPoint remoteEp = new IPEndPoint(IPAddress.Any, 0);
+            int replyCountdown = 0;
 
             while (_isRunning)
             {
                 try
                 {
-                    int bytesRead = _socket.Receive(_recvBuffer, 0, _recvBuffer.Length, SocketFlags.None);
+                    int bytesRead = _socket.ReceiveFrom(_recvBuffer, 0, _recvBuffer.Length, SocketFlags.None, ref remoteEp);
                     if (bytesRead < PacketSizeBytes || _recvBuffer[0] != PacketHeader)
                         continue;
+
+                    // Send a lightweight 4-byte "VRAT" unicast registration reply on first packet and every ~100 packets
+                    // so the ESP32 immediately switches from 100ms-buffered Wi-Fi Broadcast to 200 Hz direct Unicast!
+                    if (replyCountdown <= 0)
+                    {
+                        replyCountdown = 100;
+                        try { _socket.SendTo(UnicastReplyMagic, 0, UnicastReplyMagic.Length, SocketFlags.None, remoteEp); } catch { }
+                    }
+                    else
+                    {
+                        replyCountdown--;
+                    }
 
                     int latestPacketLen = Mathf.Min(bytesRead, MaxPacketSizeBytes);
                     _latestValidPacket[22] = 0;

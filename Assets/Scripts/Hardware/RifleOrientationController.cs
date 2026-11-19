@@ -32,8 +32,8 @@ namespace VRAtis.Hardware
         [SerializeField] private Transform headCameraTransform;
 
         [Header("Sensör Eksen Eşlemesi (MPU-9250 -> Unity)")]
-        [Tooltip("PCB montaj yönünü seçin. Fotoğraftaki dikey montaj için VerticalBackFacingShooter kullanın.")]
-        [SerializeField] private SensorMountPreset mountPreset = SensorMountPreset.VerticalBackFacingShooter;
+        [Tooltip("PCB montaj yönünü seçin. Picatinny ray üstü yatay (+X=Sağ, +Y=Namlu, +Z=Tavan) montaj için StandardMpuFlatForward kullanın.")]
+        [SerializeField] private SensorMountPreset mountPreset = SensorMountPreset.StandardMpuFlatForward;
 
         [Tooltip("Hangi sensör ekseni Unity sağ (X), yukarı (Y), ileri (Z) eksenine karşılık gelir.")]
         [SerializeField] private Vector3Int unityAxisFromSensor = new Vector3Int(1, 3, 2);
@@ -47,17 +47,21 @@ namespace VRAtis.Hardware
         [Header("Nişan Sıfırlama (Yaw Zeroing)")]
         [SerializeField] private bool autoZeroYawOnFirstPacket = true;
 
+        [Header("Anlık Tepki (Sıfır Gecikme Modu)")]
+        [Tooltip("Açıkken tüm yumuşatma ve tahmin filtreleri kapatılır; tüfek 200 Hz ESP32 verisine 0 ms gecikmeyle birebir anlık tepki verir.")]
+        [SerializeField] private bool directZeroLagMode = true;
+
         [Header("Wi-Fi Paket Boşluğu Tahminleyici (Dead-Reckoning)")]
         [Tooltip("2.4 GHz Wi-Fi paketleri 10-30 ms geciktiğinde tüfeğin donmasını önlemek için açısal hızla ara kareleri doldurur.")]
-        [SerializeField] private bool enableWifiGapPrediction = true;
+        [SerializeField] private bool enableWifiGapPrediction = false;
 
-        [Tooltip("Maksimum ileri tahmin süresi (ms). 2.4 GHz modemdeki 45-75 ms'lik mikro-gecikmeleri sarsıntısız kapatır.")]
+        [Tooltip("Maksimum ileri tahmin süresi (ms).")]
         [Range(0f, 90f)]
-        [SerializeField] private float maxPredictionMs = 65f;
+        [SerializeField] private float maxPredictionMs = 25f;
 
         [Header("Hıza Duyarlı Akıllı Yumuşatma (1-Euro Adaptive Slerp)")]
-        [Tooltip("Yavaş nişanda Wi-Fi paket adımlarını ütüler, hızlı dönüşte gecikmeyi sıfıra indirir.")]
-        [SerializeField] private bool enableAdaptiveSmoothing = true;
+        [Tooltip("Açılırsa hareketi yumuşatır; ani/birebir nişan tepkisi için kapalı tutun.")]
+        [SerializeField] private bool enableAdaptiveSmoothing = false;
 
         [Tooltip("Yavaş hareketlerde taban yumuşatma hızı (yüksek = daha keskin, düşük = daha pürüzsüz).")]
         [Range(10f, 60f)]
@@ -92,6 +96,11 @@ namespace VRAtis.Hardware
 
         private void Awake()
         {
+            // Picatinny ray üstü yatay montaja geçildiği için eski sahne kaydındaki dikey (90° aşağı bakan)
+            // VerticalBackFacingShooter ayarını otomatik olarak StandardMpuFlatForward'a yükselt.
+            if (mountPreset == SensorMountPreset.VerticalBackFacingShooter)
+                mountPreset = SensorMountPreset.StandardMpuFlatForward;
+
             if (receiver == null)
                 receiver = FindAnyObjectByType<Esp32RifleReceiver>();
 
@@ -109,6 +118,35 @@ namespace VRAtis.Hardware
             _cachedMountOffsetQuat = mountOffsetEuler.sqrMagnitude > 1e-5f
                 ? Quaternion.Euler(mountOffsetEuler)
                 : Quaternion.identity;
+        }
+
+        private void OnValidate()
+        {
+            if (mountPreset == SensorMountPreset.VerticalBackFacingShooter)
+                mountPreset = SensorMountPreset.StandardMpuFlatForward;
+        }
+
+        private void OnEnable()
+        {
+            Application.onBeforeRender += OnBeforeRenderRifle;
+        }
+
+        private void OnDisable()
+        {
+            Application.onBeforeRender -= OnBeforeRenderRifle;
+        }
+
+        private void OnBeforeRenderRifle()
+        {
+            if (!directZeroLagMode || !_hasAutoZeroed || receiver == null || !receiver.IsConnected)
+                return;
+
+            Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
+            Quaternion latest = ApplyCalibrationOffsets(converted);
+            if (1f - Mathf.Abs(Quaternion.Dot(transform.rotation, latest)) > 1e-7f)
+            {
+                transform.rotation = latest;
+            }
         }
 
         private void Update()
@@ -183,6 +221,16 @@ namespace VRAtis.Hardware
             }
 
             Quaternion targetRotation = calibratedPacketRot;
+
+            // Direct 1:1 zero-lag mode: bypass prediction & Slerp filters completely for instant crisp Red Dot control
+            if (directZeroLagMode)
+            {
+                if (1f - Mathf.Abs(Quaternion.Dot(transform.rotation, targetRotation)) > 1e-7f)
+                {
+                    transform.rotation = targetRotation;
+                }
+                return;
+            }
 
             // Short-horizon Dead Reckoning when Wi-Fi delays a packet by > 6ms
             if (enableWifiGapPrediction && maxPredictionMs > 0f && _estimatedAngularSpeedDegPerSec > 1.5f)

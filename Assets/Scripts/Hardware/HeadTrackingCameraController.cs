@@ -37,8 +37,11 @@ namespace VRAtis.Hardware
         [SerializeField] private bool autoZeroYawOnFirstReading = true;
 
         [Header("Hıza Duyarlı Akıllı Yumuşatma (Yavaş Çevirme Takılmasını Önler)")]
+        [Tooltip("Açıkken telefonun 200 Hz sensörü doğrudan 0 ms gecikmeyle kameraya uygulanır (nişan alırken sürüklenme sıfır).")]
+        [SerializeField] private bool directZeroLagMode = true;
+
         [Tooltip("Yavaş kafa hareketlerinde mikro sensör basamaklarını ütüler, hızlı dönüşte gecikmeyi sıfıra yaklaştırır.")]
-        [SerializeField] private bool enableAdaptiveSmoothing = true;
+        [SerializeField] private bool enableAdaptiveSmoothing = false;
 
         [Range(8f, 60f)]
         [SerializeField] private float minSmoothingSpeed = 32f;
@@ -70,6 +73,11 @@ namespace VRAtis.Hardware
         private float _pcYawOffsetDeg;
         private float _pcPitchDeg;
         private float _twoFingerCooldown;
+        private bool _twoFingerTracking;
+        private bool _twoFingerValid;
+        private float _twoFingerStartTime;
+        private Vector2 _twoFingerStartA;
+        private Vector2 _twoFingerStartB;
         private ScreenOrientation _activeLandscapeOrientation = ScreenOrientation.LandscapeLeft;
         private ScreenOrientation _lastObservedScreenOrientation = ScreenOrientation.Unknown;
         private float _upsideDownHoldTimer;
@@ -183,18 +191,10 @@ namespace VRAtis.Hardware
 
             if (recenterOnTwoFingerTap && Touchscreen.current != null && _twoFingerCooldown <= 0f)
             {
-                int activeTouches = 0;
-                var touches = Touchscreen.current.touches;
-                for (int i = 0; i < touches.Count; i++)
-                {
-                    if (touches[i].press.isPressed)
-                        activeTouches++;
-                }
-
-                if (activeTouches >= 2)
+                if (EvaluateDeliberateTwoFingerTap())
                 {
                     wantRecenter = true;
-                    _twoFingerCooldown = 0.8f;
+                    _twoFingerCooldown = 0.9f;
                 }
             }
 #endif
@@ -206,7 +206,23 @@ namespace VRAtis.Hardware
 
                 UpdateLandscapeOrientationIfInverted(ref worldHeadRot, rawDt, out bool orientationJustChanged);
 
-                if ((autoZeroYawOnFirstReading && !_hasZeroedSensor) || wantRecenter || orientationJustChanged)
+                // ÖNEMLİ: Ekran yönü değiştiğinde (telefonu VR'dan çıkarıp masaya/yatağa ters koyup geri taktığında)
+                // _sensorYawOffset ve tüfek sıfırlaması ASLA bozulmamalıdır! Yalnız hız tamponu temizlenir.
+                if (orientationJustChanged && _hasZeroedSensor && !wantRecenter)
+                {
+                    Quaternion preservedRot = _sensorYawOffset * worldHeadRot;
+                    _lastWorldSample = worldHeadRot;
+                    _lastTargetSample = preservedRot;
+                    _smoothedHeadRot = preservedRot;
+                    _elapsedSinceSample = 0f;
+                    _estimatedHeadSpeedDegPerSec = 0f;
+                    _attitudeAngularVelocityVec = Vector3.zero;
+                    _smoothedAngularVelocityVec = Vector3.zero;
+                    transform.rotation = preservedRot;
+                    return;
+                }
+
+                if ((autoZeroYawOnFirstReading && !_hasZeroedSensor) || wantRecenter)
                 {
                     _hasZeroedSensor = true;
                     _lastWorldSample = worldHeadRot;
@@ -221,7 +237,7 @@ namespace VRAtis.Hardware
                     _smoothedCutoff = Mathf.Max(28f, minSmoothingSpeed);
                     transform.rotation = _smoothedHeadRot;
 
-                    if ((wantRecenter || orientationJustChanged) && rifleOrientationController != null)
+                    if (wantRecenter && rifleOrientationController != null)
                         rifleOrientationController.RecenterToHeadForward();
                     if (wantRecenter && opticalTracker != null)
                         opticalTracker.RecenterOpticalZero();
@@ -263,7 +279,7 @@ namespace VRAtis.Hardware
 
                 _estimatedHeadSpeedDegPerSec = _smoothedAngularVelocityVec.magnitude;
 
-                if (enableAdaptiveSmoothing)
+                if (enableAdaptiveSmoothing && !directZeroLagMode)
                 {
                     // 1) Dead-reckon targetRot across frames where AttitudeSensor has not ticked yet (100Hz vs 120Hz beat)
                     Quaternion effectiveTargetRot = targetRot;
@@ -342,7 +358,7 @@ namespace VRAtis.Hardware
                     _lastTargetSample = targetRot;
                     _elapsedSinceSample = 0f;
 
-                    if (enableAdaptiveSmoothing)
+                    if (enableAdaptiveSmoothing && !directZeroLagMode)
                     {
                         float lateBlend = Mathf.Clamp01(_smoothedCutoff * 0.004f);
                         _smoothedHeadRot = Quaternion.Slerp(_smoothedHeadRot, targetRot, lateBlend);
@@ -400,6 +416,79 @@ namespace VRAtis.Hardware
             if (opticalTracker != null)
                 opticalTracker.RecenterOpticalZero();
         }
+
+#if ENABLE_INPUT_SYSTEM
+        /// <summary>
+        /// Requires a deliberate quick 2-finger tap &amp; release inside the central screen area
+        /// so grabbing/pinching the phone edges to remove or insert it into the VR headset NEVER triggers accidental recentering.
+        /// </summary>
+        private bool EvaluateDeliberateTwoFingerTap()
+        {
+            var touches = Touchscreen.current.touches;
+            int activeCount = 0;
+            Vector2 posA = Vector2.zero;
+            Vector2 posB = Vector2.zero;
+
+            for (int i = 0; i < touches.Count; i++)
+            {
+                if (!touches[i].press.isPressed)
+                    continue;
+                Vector2 p = touches[i].position.ReadValue();
+                if (activeCount == 0) posA = p;
+                else if (activeCount == 1) posB = p;
+                activeCount++;
+            }
+
+            if (activeCount == 0)
+            {
+                if (_twoFingerTracking)
+                {
+                    float dur = Time.unscaledTime - _twoFingerStartTime;
+                    bool triggered = _twoFingerValid && dur >= 0.03f && dur <= 0.45f;
+                    _twoFingerTracking = false;
+                    _twoFingerValid = false;
+                    return triggered;
+                }
+                return false;
+            }
+
+            if (activeCount > 2)
+            {
+                _twoFingerValid = false;
+                return false;
+            }
+
+            if (activeCount == 2)
+            {
+                float sw = Mathf.Max(1f, Screen.width);
+                float sh = Mathf.Max(1f, Screen.height);
+
+                if (!_twoFingerTracking)
+                {
+                    _twoFingerTracking = true;
+                    _twoFingerStartTime = Time.unscaledTime;
+                    _twoFingerStartA = posA;
+                    _twoFingerStartB = posB;
+
+                    // Ignore bezel/edge grabs when taking phone out of or putting it into VR goggles
+                    bool aInCenter = posA.x >= sw * 0.14f && posA.x <= sw * 0.86f && posA.y >= sh * 0.14f && posA.y <= sh * 0.86f;
+                    bool bInCenter = posB.x >= sw * 0.14f && posB.x <= sw * 0.86f && posB.y >= sh * 0.14f && posB.y <= sh * 0.86f;
+                    _twoFingerValid = aInCenter && bInCenter;
+                }
+                else if (_twoFingerValid)
+                {
+                    float maxDragPx = sw * 0.06f;
+                    float heldSec = Time.unscaledTime - _twoFingerStartTime;
+                    bool dragged = Vector2.Distance(posA, _twoFingerStartA) > maxDragPx
+                                || Vector2.Distance(posB, _twoFingerStartB) > maxDragPx;
+                    if (heldSec > 0.45f || dragged)
+                        _twoFingerValid = false;
+                }
+            }
+
+            return false;
+        }
+#endif
 
         private void UpdateLandscapeOrientationIfInverted(ref Quaternion worldHeadRot, float dt, out bool orientationJustChanged)
         {
