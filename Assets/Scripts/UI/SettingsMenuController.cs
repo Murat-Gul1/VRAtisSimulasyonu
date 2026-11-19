@@ -38,6 +38,7 @@ namespace VRAtis.UI
             public Toggle[] TimePresetToggles;
             public Toggle AutoTimeAdvanceCheckbox;
             public Toggle VrSplitCheckbox;
+            public Toggle CompassNorthCheckbox;
             public Button LensMinusButton;
             public Button LensPlusButton;
             public Button LensResetButton;
@@ -122,6 +123,7 @@ namespace VRAtis.UI
         [SerializeField] private DynamicTimeOfDay timeOfDayController;
         [SerializeField] private EnvironmentManager environmentManager;
         [SerializeField] private CardboardStereoRig stereoRig;
+        [SerializeField] private HeadTrackingCameraController headTracker;
         [SerializeField] private OpticalRifleTracker opticalTracker;
         [SerializeField] private TargetRangeManager targetRangeManager;
 
@@ -183,6 +185,8 @@ namespace VRAtis.UI
                     : FindAnyObjectByType<EnvironmentManager>();
             if (stereoRig == null)
                 stereoRig = FindAnyObjectByType<CardboardStereoRig>();
+            if (headTracker == null)
+                headTracker = FindAnyObjectByType<HeadTrackingCameraController>();
             if (opticalTracker == null)
                 opticalTracker = FindAnyObjectByType<OpticalRifleTracker>();
             if (targetRangeManager == null)
@@ -446,6 +450,7 @@ namespace VRAtis.UI
                 FogCheckbox = FindChildComponent<Toggle>(weatherTr, "FogCheckbox"),
                 AutoTimeAdvanceCheckbox = FindChildComponent<Toggle>(weatherTr, "AutoTimeCheckbox"),
                 VrSplitCheckbox = FindChildComponent<Toggle>(vrCardTr, "VrSplitCheckbox"),
+                CompassNorthCheckbox = FindChildComponent<Toggle>(vrCardTr, "CompassNorthCheckbox"),
                 LensMinusButton = FindChildComponent<Button>(vrCardTr, "LensControlRow/LensMinusButton"),
                 LensPlusButton = FindChildComponent<Button>(vrCardTr, "LensControlRow/LensPlusButton"),
                 LensResetButton = FindChildComponent<Button>(vrCardTr, "LensControlRow/LensResetButton"),
@@ -630,6 +635,12 @@ namespace VRAtis.UI
                 view.VrSplitCheckbox.onValueChanged.RemoveAllListeners();
                 view.VrSplitCheckbox.onValueChanged.AddListener(HandleVrSplitChanged);
             }
+
+            if (view.CompassNorthCheckbox != null)
+            {
+                view.CompassNorthCheckbox.onValueChanged.RemoveAllListeners();
+                view.CompassNorthCheckbox.onValueChanged.AddListener(HandleCompassNorthChanged);
+            }
         }
 
         private void ApplyStereoLayoutIfNeeded(bool force)
@@ -807,6 +818,17 @@ namespace VRAtis.UI
             ApplyStereoLayoutIfNeeded(force: true);
         }
 
+        private void HandleCompassNorthChanged(bool isOn)
+        {
+            if (headTracker == null)
+                headTracker = FindAnyObjectByType<HeadTrackingCameraController>();
+
+            if (headTracker != null)
+                headTracker.SetCompassNorthLock(isOn);
+
+            SyncVrWidgetsToViews(force: true);
+        }
+
         private void NudgeVrLensSpacing(float deltaMm)
         {
             if (stereoRig == null)
@@ -882,12 +904,23 @@ namespace VRAtis.UI
 
         private void SyncVrWidgetsToViews(bool force = false)
         {
+            if (headTracker == null)
+                headTracker = FindAnyObjectByType<HeadTrackingCameraController>();
+
             float lensMm = stereoRig != null ? stereoRig.LensCenterSpacingMm : CardboardStereoRig.ActiveLensSpacingMm;
             float phoneMm = CardboardStereoRig.DetectedPhoneWidthMm;
             bool splitOn = stereoRig != null ? stereoRig.EnableSplitScreen : CardboardStereoRig.IsStereoSplitActive;
+            bool compassOn = headTracker == null || headTracker.UseCompassNorthLock;
 
             if (!force && Mathf.Approximately(lensMm, _lastDisplayedLensMm) && Mathf.Approximately(phoneMm, _lastDisplayedPhoneMm))
+            {
+                for (int v = 0; v < _views.Count; v++)
+                {
+                    if (_views[v].CompassNorthCheckbox != null)
+                        _views[v].CompassNorthCheckbox.SetIsOnWithoutNotify(compassOn);
+                }
                 return;
+            }
 
             _lastDisplayedLensMm = lensMm;
             _lastDisplayedPhoneMm = phoneMm;
@@ -901,6 +934,8 @@ namespace VRAtis.UI
                     view.ScreenWidthText.text = $"Ekran: {phoneMm:F0} mm";
                 if (view.VrSplitCheckbox != null)
                     view.VrSplitCheckbox.SetIsOnWithoutNotify(splitOn);
+                if (view.CompassNorthCheckbox != null)
+                    view.CompassNorthCheckbox.SetIsOnWithoutNotify(compassOn);
             }
         }
 

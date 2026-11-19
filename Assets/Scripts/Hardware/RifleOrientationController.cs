@@ -51,13 +51,20 @@ namespace VRAtis.Hardware
         [Tooltip("Açıkken tüm yumuşatma ve tahmin filtreleri kapatılır; tüfek 200 Hz ESP32 verisine 0 ms gecikmeyle birebir anlık tepki verir.")]
         [SerializeField] private bool directZeroLagMode = true;
 
-        [Header("Wi-Fi Paket Boşluğu Tahminleyici (Dead-Reckoning)")]
-        [Tooltip("2.4 GHz Wi-Fi paketleri 10-30 ms geciktiğinde tüfeğin donmasını önlemek için açısal hızla ara kareleri doldurur.")]
+        [Header("Wi-Fi Paket Boşluğu Tahminleyici (Yalnız Hızlı Hareket Koruması)")]
+        [Tooltip("Yavaş nişanda 0 ms ham veri korunur; yalnız hızlı savurmada (>18°/sn) Wi-Fi paketi >6 ms gecikirse mikro atlama/takılmayı giderir.")]
+        [SerializeField] private bool enableFastTurnGapBridge = true;
+
+        [Tooltip("Hızlı harekette paket boşluğu telafisinin devreye girme açısal hız eşiği (derece/sn).")]
+        [Range(8f, 45f)]
+        [SerializeField] private float fastTurnGapBridgeMinSpeedDegPerSec = 18f;
+
+        [Tooltip("Eski tam tahminleyici bayrağı (directZeroLagMode kapalıyken geçerlidir).")]
         [SerializeField] private bool enableWifiGapPrediction = false;
 
         [Tooltip("Maksimum ileri tahmin süresi (ms).")]
         [Range(0f, 90f)]
-        [SerializeField] private float maxPredictionMs = 25f;
+        [SerializeField] private float maxPredictionMs = 20f;
 
         [Header("Hıza Duyarlı Akıllı Yumuşatma (1-Euro Adaptive Slerp)")]
         [Tooltip("Açılırsa hareketi yumuşatır; ani/birebir nişan tepkisi için kapalı tutun.")]
@@ -143,6 +150,7 @@ namespace VRAtis.Hardware
 
             Quaternion converted = ConvertImuToUnity(receiver.RawImuQuaternion);
             Quaternion latest = ApplyCalibrationOffsets(converted);
+            latest = ApplyFastTurnWifiGapBridge(latest);
             if (1f - Mathf.Abs(Quaternion.Dot(transform.rotation, latest)) > 1e-7f)
             {
                 transform.rotation = latest;
@@ -222,12 +230,13 @@ namespace VRAtis.Hardware
 
             Quaternion targetRotation = calibratedPacketRot;
 
-            // Direct 1:1 zero-lag mode: bypass prediction & Slerp filters completely for instant crisp Red Dot control
+            // Direct 1:1 zero-lag mode: 0 ms raw response on slow/fine aiming, with micro Wi-Fi gap bridge ONLY during fast swings
             if (directZeroLagMode)
             {
-                if (1f - Mathf.Abs(Quaternion.Dot(transform.rotation, targetRotation)) > 1e-7f)
+                Quaternion directRot = ApplyFastTurnWifiGapBridge(targetRotation);
+                if (1f - Mathf.Abs(Quaternion.Dot(transform.rotation, directRot)) > 1e-7f)
                 {
-                    transform.rotation = targetRotation;
+                    transform.rotation = directRot;
                 }
                 return;
             }
@@ -356,6 +365,30 @@ namespace VRAtis.Hardware
             ApplyYawCalibrationToDirection(converted, desiredWorldForward);
             _lastCalibratedPacketRot = ApplyCalibrationOffsets(converted);
             _hasAutoZeroed = true;
+        }
+
+        private Quaternion ApplyFastTurnWifiGapBridge(Quaternion baseCalibratedRot)
+        {
+            if (!enableFastTurnGapBridge || receiver == null || maxPredictionMs <= 0f)
+                return baseCalibratedRot;
+
+            float speed = _estimatedAngularSpeedDegPerSec;
+            if (speed < fastTurnGapBridgeMinSpeedDegPerSec)
+                return baseCalibratedRot;
+
+            float ageSec = Mathf.Max(receiver.PacketAgeSeconds, _elapsedSinceLastDistinctPacket);
+            // Normal 250 Hz (4 ms) akışta 0 ms ham veri; yalnız Wi-Fi gecikmesi > 5.5 ms olunca ara kare doldurulur
+            float extrapolateSec = Mathf.Clamp(ageSec - 0.0055f, 0f, maxPredictionMs * 0.001f);
+            if (extrapolateSec <= 0f)
+                return baseCalibratedRot;
+
+            float speedWeight = Mathf.SmoothStep(0f, 1f, (speed - fastTurnGapBridgeMinSpeedDegPerSec) / 28f);
+            float decay = Mathf.Exp(-extrapolateSec * 28f);
+            float predAngle = Mathf.Clamp(speed * extrapolateSec * decay * speedWeight, 0f, 6f);
+            if (predAngle < 0.002f || _estimatedAngularAxis.sqrMagnitude < 1e-4f)
+                return baseCalibratedRot;
+
+            return Quaternion.AngleAxis(predAngle, _estimatedAngularAxis) * baseCalibratedRot;
         }
 
         private Quaternion ApplyCalibrationOffsets(Quaternion converted)

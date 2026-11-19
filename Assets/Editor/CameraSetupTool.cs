@@ -9,11 +9,18 @@ namespace VRAtis.EditorTools
     [InitializeOnLoad]
     public static class CameraSetupTool
     {
-        private const string AutoSetupVersionKey = "VRAtis_Camera_V19_Done";
+        private const string AutoSetupVersionKey = "VRAtis_Camera_V20_Done";
 
         static CameraSetupTool()
         {
             EditorApplication.delayCall += TryAutoSetupOnce;
+            EditorApplication.playModeStateChanged += OnPlayModeChanged;
+        }
+
+        private static void OnPlayModeChanged(PlayModeStateChange state)
+        {
+            if (state == PlayModeStateChange.EnteredEditMode)
+                EditorApplication.delayCall += TryAutoSetupOnce;
         }
 
         private static void TryAutoSetupOnce()
@@ -124,10 +131,11 @@ namespace VRAtis.EditorTools
                 optSo.FindProperty("minPixelBrightness").intValue = 72;
                 optSo.FindProperty("requestedWidth").intValue = 320;
                 optSo.FindProperty("requestedHeight").intValue = 240;
-                optSo.FindProperty("minPositionSmoothSpeed").floatValue = 12f;
-                optSo.FindProperty("maxPositionSmoothSpeed").floatValue = 38f;
+                optSo.FindProperty("minPositionSmoothSpeed").floatValue = 35f;
+                optSo.FindProperty("maxPositionSmoothSpeed").floatValue = 90f;
                 optSo.FindProperty("autoPowerRedDotNearEye").boolValue = false;
                 optSo.FindProperty("steadyHoldSeconds").floatValue = 5.0f;
+                optSo.FindProperty("enableOpticalYawFusion").boolValue = false;
                 optSo.ApplyModifiedPropertiesWithoutUndo();
 
                 SerializedObject aimSo = new SerializedObject(aimCtrl);
@@ -139,7 +147,7 @@ namespace VRAtis.EditorTools
                 aimSo.FindProperty("stereoRig").objectReferenceValue = stereoRig;
                 aimSo.FindProperty("opticalTracker").objectReferenceValue = opticalTracker;
                 aimSo.FindProperty("rifleReceiver").objectReferenceValue = receiver;
-                aimSo.FindProperty("eyeReliefMeters").floatValue = 0.115f;
+                aimSo.FindProperty("eyeReliefMeters").floatValue = 0.215f;
                 aimSo.ApplyModifiedPropertiesWithoutUndo();
 
                 if (redDotSight != null)

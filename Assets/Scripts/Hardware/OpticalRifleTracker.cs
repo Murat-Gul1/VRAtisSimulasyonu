@@ -693,9 +693,10 @@ namespace VRAtis.Hardware
                     _calibrationPhase = CalibrationPhase.Idle;
             }
 
-            Vector3 rFwd = new Vector3(transform.forward.x, 0f, transform.forward.z);
-            bool hasRifleYaw = rifleReceiver != null && rifleReceiver.IsConnected && rFwd.sqrMagnitude > 1e-4f;
-            float rifleFlatYawDeg = hasRifleYaw ? Mathf.Atan2(rFwd.x, rFwd.z) * Mathf.Rad2Deg : 0f;
+            float rifleFlatYawDeg = 0f;
+            bool hasRifleYaw = rifleReceiver != null
+                && rifleReceiver.IsConnected
+                && TryComputeStableFlatYawDeg(transform, out rifleFlatYawDeg);
 
             Vector3 cFwd = new Vector3(headCameraTransform.forward.x, 0f, headCameraTransform.forward.z);
             float camFlatYawDeg = cFwd.sqrMagnitude > 1e-4f ? Mathf.Atan2(cFwd.x, cFwd.z) * Mathf.Rad2Deg : 0f;
@@ -704,11 +705,15 @@ namespace VRAtis.Hardware
 
             if (gotNewResult && detectedNow)
             {
+                float rifleSpeedDegS = _rifleOrientationController != null
+                    ? _rifleOrientationController.EstimatedAngularSpeedDegPerSec
+                    : 0f;
+                float dynamicJumpLimit = Mathf.Max(maxSingleFrameJumpMeters, 0.24f + rifleSpeedDegS * 0.0014f);
                 bool rejectOutlier = _hasStableLock
                     && _hasLastAcceptedRaw
                     && _unseenSeconds < 0.25f
-                    && Vector3.Distance(rawCamPos, _lastAcceptedRawCamPos) > maxSingleFrameJumpMeters
-                    && _spikeRejectCount < 2;
+                    && Vector3.Distance(rawCamPos, _lastAcceptedRawCamPos) > dynamicJumpLimit
+                    && _spikeRejectCount < 1;
 
                 if (rejectOutlier)
                 {
@@ -914,7 +919,7 @@ namespace VRAtis.Hardware
             }
             else if (enableBodyYawFollowFallback)
             {
-                Vector3 targetWorldPos = ComputeBodyYawFallbackWorldPos(headOrigin, hasRifleYaw, rifleFlatYawDeg, camFlatYawDeg);
+                Vector3 targetWorldPos = ComputeBodyYawFallbackWorldPos(headOrigin, hasRifleYaw, rifleFlatYawDeg, camFlatYawDeg, dt);
                 if (!_posInitialized)
                 {
                     _smoothedWorldPos = targetWorldPos;
@@ -1137,7 +1142,33 @@ namespace VRAtis.Hardware
             }
         }
 
-        private Vector3 ComputeBodyYawFallbackWorldPos(Vector3 headOrigin, bool hasRifleYaw, float rifleFlatYawDeg, float camFlatYawDeg)
+        /// <summary>
+        /// Computes horizontal rifle yaw without pitch gimbal explosion:
+        /// Cross(right, up) remains rock-solid even when the barrel points -85 deg straight down at the floor.
+        /// </summary>
+        private static bool TryComputeStableFlatYawDeg(Transform t, out float yawDeg)
+        {
+            Vector3 stableFwd = Vector3.Cross(t.right, Vector3.up);
+            stableFwd.y = 0f;
+            if (stableFwd.sqrMagnitude > 0.04f)
+            {
+                yawDeg = Mathf.Atan2(stableFwd.x, stableFwd.z) * Mathf.Rad2Deg;
+                return true;
+            }
+
+            Vector3 fwd = t.forward;
+            fwd.y = 0f;
+            if (fwd.sqrMagnitude > 1e-4f)
+            {
+                yawDeg = Mathf.Atan2(fwd.x, fwd.z) * Mathf.Rad2Deg;
+                return true;
+            }
+
+            yawDeg = 0f;
+            return false;
+        }
+
+        private Vector3 ComputeBodyYawFallbackWorldPos(Vector3 headOrigin, bool hasRifleYaw, float rifleFlatYawDeg, float camFlatYawDeg, float dt)
         {
             if (hasRifleYaw)
             {
@@ -1149,15 +1180,25 @@ namespace VRAtis.Hardware
                     if (_posInitialized)
                     {
                         Vector3 relWorld = _smoothedWorldPos - headOrigin;
-                        _fallbackRelBodyOffset = Quaternion.Inverse(Quaternion.Euler(0f, camFlatYawDeg, 0f)) * relWorld;
+                        Vector3 relBody = Quaternion.Inverse(Quaternion.Euler(0f, camFlatYawDeg, 0f)) * relWorld;
+                        // Prevent distorted camera-edge LED positions from dragging the rifle far sideways when lowered
+                        relBody.x = Mathf.Clamp(relBody.x, readyLocalOffsetMeters.x - 0.14f, readyLocalOffsetMeters.x + 0.14f);
+                        relBody.y = Mathf.Clamp(relBody.y, readyLocalOffsetMeters.y - 0.14f, readyLocalOffsetMeters.y + 0.10f);
+                        relBody.z = Mathf.Clamp(relBody.z, readyLocalOffsetMeters.z - 0.05f, readyLocalOffsetMeters.z + 0.05f);
+                        _fallbackRelBodyOffset = relBody;
                     }
                     else
                     {
                         _fallbackRelBodyOffset = readyLocalOffsetMeters;
                     }
                 }
+                else
+                {
+                    // Gently relax the body-relative anchor toward natural ready stance while LEDs are out of view
+                    float relaxBlend = 1f - Mathf.Exp(-2.5f * dt);
+                    _fallbackRelBodyOffset = Vector3.Lerp(_fallbackRelBodyOffset, readyLocalOffsetMeters, relaxBlend);
+                }
 
-                // Keep exact last height/lateral/forward placement relative to body; never yank back to readyLocalOffsetMeters
                 _bodyYawDeg = _fallbackRefBodyYaw + Mathf.DeltaAngle(_fallbackRefRifleYaw, rifleFlatYawDeg);
                 _bodyYawInitialized = true;
                 _currentCamLocalOffset = _fallbackRelBodyOffset;

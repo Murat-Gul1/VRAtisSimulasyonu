@@ -26,7 +26,10 @@ namespace VRAtis.Hardware
         [Tooltip("Android açılışında ekranı yatay Cardboard (LandscapeLeft) kilidine ve uyku modunu kapalıya alır.")]
         [SerializeField] private bool lockLandscapeOnMobile = true;
 
-        [Tooltip("Manyetometre sıçraması olmayan GameRotationVector (Jiroskop+İvmeölçer) sensörünü önceliklendirir.")]
+        [Tooltip("Kapalı (önerilen - 6-DOF GameRotationVector): Ev içi manyetik parazitten etkilenmez. Açıkken 9-DOF pusula kullanılır.")]
+        [SerializeField] private bool useCompassNorthLock = false;
+
+        [Tooltip("Eski uyumluluk alanı; canlı seçim useCompassNorthLock üzerinden yönetilir.")]
         [SerializeField] private bool preferGameRotationVector = true;
 
         [Tooltip("Sensör örnekleme frekansı (Hz). Varsayılan ~50 Hz takılmasını önlemek için 200 Hz istenir.")]
@@ -101,7 +104,16 @@ namespace VRAtis.Hardware
         private float _smoothedFrameDt = 1f / 120f;
         private float _smoothedCutoff = 32f;
 
+        private const string CompassNorthPrefKey = "VRAtis_PhoneCompass9DOF_v2";
+        private bool _pendingSeamlessSensorSwitch;
+        private Vector3 _seamlessTargetFlatFwd = Vector3.forward;
+
         public bool IsUsingMobileSensor => _sensorReady;
+        public bool UseCompassNorthLock
+        {
+            get => useCompassNorthLock;
+            set => SetCompassNorthLock(value);
+        }
         public bool IsRoll180Compensated => _isRoll180Compensated;
         public float EstimatedHeadSpeedDegPerSec => _estimatedHeadSpeedDegPerSec;
         public Vector3 ReadyWorldPosition => _readyPosition;
@@ -109,6 +121,9 @@ namespace VRAtis.Hardware
 
         private void Awake()
         {
+            useCompassNorthLock = PlayerPrefs.GetInt(CompassNorthPrefKey, useCompassNorthLock ? 1 : 0) != 0;
+            preferGameRotationVector = !useCompassNorthLock;
+
             _readyPosition = transform.position;
             _smoothedHeadRot = transform.rotation;
 
@@ -205,6 +220,22 @@ namespace VRAtis.Hardware
                 _elapsedSinceSample += rawDt;
 
                 UpdateLandscapeOrientationIfInverted(ref worldHeadRot, rawDt, out bool orientationJustChanged);
+
+                if (_pendingSeamlessSensorSwitch && _hasZeroedSensor && !wantRecenter)
+                {
+                    _pendingSeamlessSensorSwitch = false;
+                    ApplySensorYawZeroToDirection(worldHeadRot, _seamlessTargetFlatFwd);
+                    Quaternion preservedRot = _sensorYawOffset * worldHeadRot;
+                    _lastWorldSample = worldHeadRot;
+                    _lastTargetSample = preservedRot;
+                    _smoothedHeadRot = preservedRot;
+                    _elapsedSinceSample = 0f;
+                    _estimatedHeadSpeedDegPerSec = 0f;
+                    _attitudeAngularVelocityVec = Vector3.zero;
+                    _smoothedAngularVelocityVec = Vector3.zero;
+                    transform.rotation = preservedRot;
+                    return;
+                }
 
                 // ÖNEMLİ: Ekran yönü değiştiğinde (telefonu VR'dan çıkarıp masaya/yatağa ters koyup geri taktığında)
                 // _sensorYawOffset ve tüfek sıfırlaması ASLA bozulmamalıdır! Yalnız hız tamponu temizlenir.
@@ -548,11 +579,43 @@ namespace VRAtis.Hardware
                 || _isRoll180Compensated;
         }
 
+        public void SetCompassNorthLock(bool enable)
+        {
+            if (useCompassNorthLock == enable && _activeSensor != null)
+                return;
+
+            useCompassNorthLock = enable;
+            preferGameRotationVector = !enable;
+            PlayerPrefs.SetInt(CompassNorthPrefKey, enable ? 1 : 0);
+            PlayerPrefs.Save();
+
+            if (_hasZeroedSensor)
+            {
+                Vector3 curFwd = _smoothedHeadRot * Vector3.forward;
+                curFwd.y = 0f;
+                _seamlessTargetFlatFwd = curFwd.sqrMagnitude > 1e-4f
+                    ? curFwd.normalized
+                    : (_initialForwardYaw * Vector3.forward);
+                _pendingSeamlessSensorSwitch = true;
+            }
+
+#if ENABLE_INPUT_SYSTEM
+            _activeSensor = null;
+#endif
+            EnablePhoneSensor();
+        }
+
 #if ENABLE_INPUT_SYSTEM
         private AttitudeSensor ResolvePreferredSensor()
         {
 #if UNITY_EDITOR || UNITY_ANDROID
-            if (preferGameRotationVector)
+            if (useCompassNorthLock)
+            {
+                AndroidRotationVector rotVec = InputSystem.GetDevice<AndroidRotationVector>();
+                if (rotVec != null)
+                    return rotVec;
+            }
+            else
             {
                 AndroidGameRotationVector gameRot = InputSystem.GetDevice<AndroidGameRotationVector>();
                 if (gameRot != null)
@@ -719,6 +782,11 @@ namespace VRAtis.Hardware
 
         private void ApplySensorYawZero(Quaternion worldHeadRot)
         {
+            ApplySensorYawZeroToDirection(worldHeadRot, _initialForwardYaw * Vector3.forward);
+        }
+
+        private void ApplySensorYawZeroToDirection(Quaternion worldHeadRot, Vector3 targetFlatFwd)
+        {
             Vector3 sensorFwd = worldHeadRot * Vector3.forward;
             Vector3 flatSensorFwd = new Vector3(sensorFwd.x, 0f, sensorFwd.z);
             if (flatSensorFwd.sqrMagnitude < 1e-4f)
@@ -727,8 +795,13 @@ namespace VRAtis.Hardware
                 return;
             }
 
-            Vector3 targetFwd = _initialForwardYaw * Vector3.forward;
-            float deltaYaw = Vector3.SignedAngle(flatSensorFwd.normalized, targetFwd, Vector3.up);
+            Vector3 safeTarget = new Vector3(targetFlatFwd.x, 0f, targetFlatFwd.z);
+            if (safeTarget.sqrMagnitude < 1e-4f)
+                safeTarget = _initialForwardYaw * Vector3.forward;
+            else
+                safeTarget.Normalize();
+
+            float deltaYaw = Vector3.SignedAngle(flatSensorFwd.normalized, safeTarget, Vector3.up);
             _sensorYawOffset = Quaternion.AngleAxis(deltaYaw, Vector3.up);
         }
 

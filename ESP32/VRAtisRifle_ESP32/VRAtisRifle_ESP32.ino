@@ -7,7 +7,13 @@
 #include <math.h>
 #include <string.h>
 
-// --- AĞ AYARLARI (Önce Telefon Hotspot'u arar; bulamazsa Ev Wi-Fi Alt Ağ Yayınına bağlanır) ---
+// ============================================================================
+// VR ATIŞ SİMÜLASYONU — NİHAİ SAF 6-DOF DUAL-CORE ESP32-S3 FIRMWARE
+// Core 1: 1000 Hz Bortz-Koning Exact Quaternion AHRS + 2 Kademeli Akıllı ZUPT
+// Core 0: 250 Hz Düşük Gecikmeli Unicast UDP + Parazit Filtreli Tetik/Omuz
+// ============================================================================
+
+// --- AĞ AYARLARI (Önce Telefon Hotspot'u arar; yoksa Ev Wi-Fi Unicast'a bağlanır) ---
 const char* HOTSPOT_SSID     = "YOUR_HOTSPOT_SSID";         // Galaxy A26 Hotspot adın
 const char* HOTSPOT_PASSWORD = "YOUR_WIFI_PASSWORD";  // Galaxy A26 Hotspot şifren
 
@@ -25,56 +31,44 @@ IPAddress targetIp           = HOME_PC_IP;
 #define SHOULDER_PIN 16     // Omuz Temas Sensörü -> GPIO 16, Diğer plaka -> GND
 #define I2C_CLOCK_HZ 400000 // 400 kHz Fast-Mode I2C
 
-// --- AK8963 DAHİLİ MANYETOMETRE (9-DOF) ADRES VE KAYITÇILARI ---
-#define AK8963_ADDR      0x0C
-#define AK8963_WIA_REG   0x00 // Beklenen kimlik: 0x48
-#define AK8963_ST1_REG   0x02 // Data Ready (bit 0)
-#define AK8963_HXL_REG   0x03 // 6 byte veri + 1 byte ST2 (0x09)
-#define AK8963_CNTL1_REG 0x0A
-#define AK8963_CNTL2_REG 0x0B
-#define AK8963_ASAX_REG  0x10
-
-// --- ZAMANLAMA SABİTLERİ (Core 1: 1000 Hz IMU / Core 0: 200 Hz UDP) ---
+// --- ZAMANLAMA SABİTLERİ (Core 1: 1000 Hz IMU / Core 0: 250 Hz UDP) ---
 const uint32_t IMU_INTERVAL_US        = 1000;  // 1000 Hz (1 ms) deterministik Core 1 döngüsü
-const uint32_t MAG_INTERVAL_US        = 10000; // 100 Hz (10 ms) isteğe bağlı AK8963
-const uint32_t UDP_INTERVAL_US        = 5000;  // 200 Hz (5 ms) UDP paket gönderimi
-const uint32_t MIN_UDP_GAP_US         = 2000;  // Wi-Fi TX koruması (2 ms)
+const uint32_t UDP_INTERVAL_US        = 4000;  // 250 Hz (4 ms) akıcı Unicast UDP (120 FPS ekrana kare başına 2+ paket)
+const uint32_t MIN_UDP_GAP_US         = 1500;  // Wi-Fi TX koruması (1.5 ms)
 const uint32_t MIN_SHOT_INTERVAL_US   = 35000; // Tetik ark koruması (35 ms)
 const uint32_t TRIGGER_CONFIRM_US     = 12000; // Tetik basış onay süresi (12 ms kesintisiz LOW -> GPIO16 parazit/ESD reddi)
 const uint32_t RELEASE_DEBOUNCE_US    = 25000; // Tetik bırakma kararlılığı (25 ms kesintisiz HIGH)
 const uint32_t SHOULDER_DEBOUNCE_US   = 30000; // Omuz sensörü sıçrama koruması (30 ms kesintisiz durum)
 const uint32_t DEBUG_INTERVAL_MS      = 1000;  // 1 Hz durum çıktısı
+const uint32_t UNICAST_KEEPALIVE_MS   = 6000;  // Unity "VRAT" yanıtı aktifken broadcast susar (Wi-Fi takılmasını önler)
 
 // --- SENSÖR ÖLÇEK SABİTLERİ ---
 constexpr float DEG_TO_RAD_F    = PI / 180.0f;
 constexpr float RAD_TO_DEG_F    = 180.0f / PI;
-constexpr float GYRO_LSB_PER_DS = 32.8f;                        // +-1000 deg/s (FS_SEL=2)
-constexpr float GYRO_DEG_SCALE  = 1.0f / GYRO_LSB_PER_DS;       // raw -> deg/s
+constexpr float GYRO_LSB_PER_DS = 32.8f;                          // +-1000 deg/s (FS_SEL=2)
+constexpr float GYRO_DEG_SCALE  = 1.0f / GYRO_LSB_PER_DS;         // raw -> deg/s
 constexpr float GYRO_RAD_SCALE  = DEG_TO_RAD_F / GYRO_LSB_PER_DS; // raw -> rad/s
-constexpr float ACCEL_SCALE     = 1.0f / 8192.0f;               // +-4g (AFS_SEL=1)
-constexpr float MAG_UT_SCALE    = 4912.0f / 32760.0f;           // AK8963 16-bit (~0.15 uT/LSB)
+constexpr float ACCEL_SCALE     = 1.0f / 8192.0f;                 // +-4g (AFS_SEL=1)
 
-// --- 6-DOF / 9-DOF FÜZYON VE 2 KADEMELİ AKILLI ZUPT SABİTLERİ ---
+// --- SAF 6-DOF FÜZYON VE 2 KADEMELİ AKILLI ZUPT SABİTLERİ ---
 const float WARMUP_BETA               = 1.25f;
 const float STEADY_BETA               = 0.012f; // Yalnız tam sabit duruşta çok yumuşak yerçekimi düzeltmesi
 const float MOVE_ACCEL_GATE_G         = 0.035f; // |accMag - 1g| > 0.035g iken beta=0 (yanal/merkezkaç ivme koruması)
 const float MOVE_ACCEL_DELTA_G        = 0.025f; // Ani ivme değişiminde beta=0
 const float MOVE_GYRO_GATE_RAD_S      = 0.14f;  // ~8 deg/s üstü hedef geçişlerinde saf jiroskop (beta=0 -> sıfır Yaw sızıntısı)
 const int   ACCEL_SETTLE_SAMPLES_REQ  = 120;    // Hareket bitiminde 120 ms titreşim sönümleme beklemesi
-const float KP_MAG_YAW                = 0.15f;  // Yalnız '9' komutuyla 9-DOF açılırsa yumuşak pusula kazancı
-const float KI_MAG_YAW                = 0.02f;
 
-// Kademe 2: Katı Masa / Destekli Sabitlik Kilidi (Elde ince nişanda asla yanlışlıkla devreye girmez!)
+// Kademe 2: Katı Masa / Destekli Sabitlik Kilidi (Elde ince nişanda asla yanlışlıkla devreye girmez)
 const float DESK_ACCEL_DELTA_G        = 0.006f;
 const float DESK_GYRO_DEV_DEG_S       = 0.22f;
 const float DESK_MAX_DRIFT_DEG_S      = 1.20f;
 const int   DESK_STILL_SAMPLES_REQ    = 1500;   // 1.5 sn kesintisiz katı masa hareketsizliği şartı
 const float DESK_LEARN_ALPHA          = 0.008f; // Yalnız sert masa üstünde yumuşak ofset kilidi
 
-// Kademe 1: Elde Nişan Ultra-Korumalı Termal Telafi (İnce nişanı asla bias sanıp ters kayma üretmez!)
+// Kademe 1: Elde Nişan Ultra-Korumalı Termal Telafi (İnce nişanı asla bias sanıp ters kayma üretmez)
 const float AIM_ACCEL_DELTA_G         = 0.035f;
 const float AIM_LP_ALPHA              = 0.0018f; // ~0.28 Hz LPF (el titremesini/nefesi süzer)
-const float AIM_LP_MAX_DEG_S          = 0.30f;   // 0.30 deg/s üstü kasıtlı ince nişandır -> asla öğrenme!
+const float AIM_LP_MAX_DEG_S          = 0.30f;   // 0.30 deg/s üstü kasıtlı ince nişandır -> asla öğrenme
 const float AIM_LP_RESET_DEG_S        = 0.55f;
 const float AIM_INST_MAX_DEG_S        = 2.50f;   // Anlık titreme tavanı
 const int   AIM_STILL_SAMPLES_REQ     = 2500;    // 2.5 saniye hedef üstünde kesintisiz sabit nişan şartı
@@ -90,7 +84,6 @@ enum CalRequest : uint8_t {
   CAL_GYRO_DESK,
   CAL_SCALE_360,
   CAL_RESET_SCALE,
-  CAL_MAG,
   CAL_CLEAR_ALL
 };
 
@@ -114,8 +107,7 @@ struct SharedImuSnapshot {
   uint32_t satCount;
   uint32_t i2cErrCount;
   uint32_t pwrResetCount;
-  uint8_t zuptTier;     // 0=HAREKET, 1=NISAN, 2=SABIT
-  bool magAnomaly;
+  uint8_t zuptTier;       // 0=HAREKET, 1=NISAN, 2=SABIT
   bool calBusy;
 };
 
@@ -130,7 +122,7 @@ SharedImuSnapshot sharedState = {
   25.0f,
   1.0f, 1.0f, 1.0f,
   1000, 0, 0, 0, 0,
-  0, false, false
+  0, false
 };
 
 TaskHandle_t imuTaskHandle = nullptr;
@@ -138,37 +130,37 @@ TaskHandle_t netTaskHandle = nullptr;
 esp_timer_handle_t imuFallbackTimer = nullptr;
 
 uint8_t mpuAddr               = 0x68;
-volatile bool nineDofEnabled  = false; // Varsayılan: 6-DOF + 2 Kademeli Akıllı ZUPT
 volatile bool cancelCalFlag   = false;
 volatile uint8_t pendingCal   = CAL_NONE;
-bool hasMagnetometer          = false;
-bool hasMagCal                = false;
 bool hasFlashGyroCal          = false;
-bool magAnomalyActive         = false;
+bool sensorInitialized        = false;
 
 // Tetik & Omuz Kararlı Filtre Değişkenleri (Ham edge-ISR yerine 12ms/30ms kesintisiz onay)
-bool triggerEventFlag                 = false;
-bool triggerArmed                     = true;
-uint32_t interruptCounter             = 0;
-uint32_t lastTriggerPressUs           = 0;
-bool trigLowTracking                  = false;
-uint32_t trigLowStartUs               = 0;
-uint16_t trigLowSamples               = 0;
-bool trigHighTracking                 = false;
-uint32_t trigHighStartUs              = 0;
-uint32_t triggerGlitchRejected        = 0;
+bool triggerEventFlag           = false;
+bool triggerArmed               = true;
+uint32_t interruptCounter       = 0;
+uint32_t lastTriggerPressUs     = 0;
+bool trigLowTracking            = false;
+uint32_t trigLowStartUs         = 0;
+uint16_t trigLowSamples         = 0;
+bool trigHighTracking           = false;
+uint32_t trigHighStartUs        = 0;
+uint32_t triggerGlitchRejected  = 0;
 
-bool shoulderEventFlag                = false;
-uint8_t shoulderState                 = 0;
-bool shoulderPendingTracking          = false;
-uint8_t shoulderPendingVal            = 0;
-uint32_t shoulderPendingStartUs       = 0;
+bool shoulderEventFlag          = false;
+uint8_t shoulderState           = 0;
+bool shoulderPendingTracking    = false;
+uint8_t shoulderPendingVal      = 0;
+uint32_t shoulderPendingStartUs = 0;
+
+// Unity Unicast kilit durumu (kilitliyken broadcast kapatılır -> Wi-Fi takılması sıfır)
+bool unityClientLocked          = false;
+uint32_t lastUnityHeartbeatMs   = 0;
 
 // Ham sensör verileri (Yalnız Core 1 imuTask erişir)
 int16_t rawAx = 0, rawAy = 0, rawAz = 0;
 int16_t rawTemp = 0;
 int16_t rawGx = 0, rawGy = 0, rawGz = 0;
-int16_t rawMx = 0, rawMy = 0, rawMz = 0;
 
 // Kalibrasyon, Termal Eğim, Ölçek ve 2 Kademeli ZUPT durumları (Yalnız Core 1)
 float baseGxOffset = 0.0f, baseGyOffset = 0.0f, baseGzOffset = 0.0f; // tRef sıcaklığındaki temiz masa tabanı
@@ -192,23 +184,19 @@ uint32_t lastThermalSaveMs = 0;
 float prevGxRad = 0.0f, prevGyRad = 0.0f, prevGzRad = 0.0f;
 bool hasPrevGyro = false;
 
-// Manyetometre fabrika ASA çarpanı + Hard/Soft-Iron kalibrasyonu
-float magAsaX = 1.0f, magAsaY = 1.0f, magAsaZ = 1.0f;
-float magOffX = 0.0f, magOffY = 0.0f, magOffZ = 0.0f;
-float magScaleX = 1.0f, magScaleY = 1.0f, magScaleZ = 1.0f;
-float magRefFieldUt = 45.0f;
-float calMx = 0.0f, calMy = 0.0f, calMz = 0.0f;
-bool magSampleValid = false;
-
-// Kuaterniyon & 9-DOF Yaw integral durumu
+// Kuaterniyon durumu (Yalnız Core 1)
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
-float yawBiasEarthZ = 0.0f;
 uint32_t bootMillis = 0;
 
-// --- I2C YARDIMCILARI (Yalnız setup() ve Core 1 imuTask çağırır) ---
+// --- YARDIMCILAR ---
 static inline TickType_t msToTicksSafe(uint32_t ms) {
   TickType_t ticks = pdMS_TO_TICKS(ms);
   return (ticks > 0) ? ticks : 1;
+}
+
+// Pil modunda (USB takılı değilken) ESP32-S3 USB-CDC tamponunun Core 0 UDP görevini tıkamasını önler
+static inline bool serialCanWriteNow() {
+  return (bool)Serial && (Serial.availableForWrite() >= 64);
 }
 
 void writeI2CReg(uint8_t devAddr, uint8_t reg, uint8_t val) {
@@ -256,52 +244,7 @@ bool readRawMPU() {
   return true;
 }
 
-bool readAlignedMagUt(float& outRawMpuX, float& outRawMpuY, float& outRawMpuZ) {
-  if (!hasMagnetometer) return false;
-
-  uint8_t st1 = readI2CReg(AK8963_ADDR, AK8963_ST1_REG);
-  if ((st1 & 0x01) == 0) return false;
-
-  Wire.beginTransmission(AK8963_ADDR);
-  Wire.write(AK8963_HXL_REG);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom((uint16_t)AK8963_ADDR, (uint8_t)7, true) != 7) return false;
-
-  uint8_t xL = Wire.read();
-  uint8_t xH = Wire.read();
-  uint8_t yL = Wire.read();
-  uint8_t yH = Wire.read();
-  uint8_t zL = Wire.read();
-  uint8_t zH = Wire.read();
-  uint8_t st2 = Wire.read();
-
-  if (st2 & 0x08) return false;
-
-  rawMx = (int16_t)((xH << 8) | xL);
-  rawMy = (int16_t)((yH << 8) | yL);
-  rawMz = (int16_t)((zH << 8) | zL);
-
-  float akX = rawMx * magAsaX * MAG_UT_SCALE;
-  float akY = rawMy * magAsaY * MAG_UT_SCALE;
-  float akZ = rawMz * magAsaZ * MAG_UT_SCALE;
-
-  // AK8963 -> MPU-6500 fiziksel kalıp dönüşümü
-  outRawMpuX =  akY;
-  outRawMpuY =  akX;
-  outRawMpuZ = -akZ;
-  return true;
-}
-
-void rotateVecByQuat(float qw, float qx, float qy, float qz, float vx, float vy, float vz, float& rx, float& ry, float& rz) {
-  float tx = 2.0f * (qy * vz - qz * vy);
-  float ty = 2.0f * (qz * vx - qx * vz);
-  float tz = 2.0f * (qx * vy - qy * vx);
-  rx = vx + qw * tx + (qy * tz - qz * ty);
-  ry = vy + qw * ty + (qz * tx - qx * tz);
-  rz = vz + qw * tz + (qx * ty - qy * tx);
-}
-
-void initQuatFromAccelAndMag(float ax, float ay, float az, float mx, float my, float mz, bool useMag) {
+void initQuatFromAccel(float ax, float ay, float az) {
   float norm = sqrtf(ax * ax + ay * ay + az * az);
   if (norm < 1e-6f) return;
   ax /= norm; ay /= norm; az /= norm;
@@ -321,29 +264,6 @@ void initQuatFromAccelAndMag(float ax, float ay, float az, float mx, float my, f
       q3 = z / qNorm;
     }
   }
-
-  if (useMag) {
-    float hx, hy, hz;
-    rotateVecByQuat(q0, q1, q2, q3, mx, my, mz, hx, hy, hz);
-    float hLen = hypotf(hx, hy);
-    if (hLen > 1e-4f) {
-      float halfPsi = 0.5f * atan2f(-hy, hx);
-      float cz = cosf(halfPsi);
-      float sz = sinf(halfPsi);
-      float n0 = cz * q0 - sz * q3;
-      float n1 = cz * q1 - sz * q2;
-      float n2 = cz * q2 + sz * q1;
-      float n3 = cz * q3 + sz * q0;
-      float nNorm = sqrtf(n0 * n0 + n1 * n1 + n2 * n2 + n3 * n3);
-      if (nNorm > 1e-6f) {
-        q0 = n0 / nNorm;
-        q1 = n1 / nNorm;
-        q2 = n2 / nNorm;
-        q3 = n3 / nNorm;
-      }
-    }
-  }
-  yawBiasEarthZ = 0.0f;
   hasPrevGyro = false;
 }
 
@@ -385,111 +305,19 @@ void loadGyroCalFromFlash() {
   prefs.end();
 }
 
-void saveMagCalToFlash() {
-  if (!prefs.begin("vratis_imu", false)) return;
-  prefs.putBool("ok", true);
-  prefs.putFloat("ox", magOffX);
-  prefs.putFloat("oy", magOffY);
-  prefs.putFloat("oz", magOffZ);
-  prefs.putFloat("sx", magScaleX);
-  prefs.putFloat("sy", magScaleY);
-  prefs.putFloat("sz", magScaleZ);
-  prefs.putFloat("ref", magRefFieldUt);
-  prefs.end();
-}
-
-void loadMagCalFromFlash() {
-  if (!prefs.begin("vratis_imu", true)) return;
-  hasMagCal = prefs.getBool("ok", false);
-  if (hasMagCal) {
-    magOffX = prefs.getFloat("ox", 0.0f);
-    magOffY = prefs.getFloat("oy", 0.0f);
-    magOffZ = prefs.getFloat("oz", 0.0f);
-    magScaleX = prefs.getFloat("sx", 1.0f);
-    magScaleY = prefs.getFloat("sy", 1.0f);
-    magScaleZ = prefs.getFloat("sz", 1.0f);
-    magRefFieldUt = prefs.getFloat("ref", 45.0f);
-  }
-  prefs.end();
-}
-
 void clearAllCalFlash() {
-  if (prefs.begin("vratis_imu", false)) {
-    prefs.clear();
-    prefs.end();
-  }
   if (prefs.begin("vratis_gyro", false)) {
     prefs.clear();
     prefs.end();
   }
-  hasMagCal = false;
+  if (prefs.begin("vratis_imu", false)) {
+    prefs.clear();
+    prefs.end();
+  }
   hasFlashGyroCal = false;
-  magOffX = magOffY = magOffZ = 0.0f;
-  magScaleX = magScaleY = magScaleZ = 1.0f;
   thermalKx = thermalKy = thermalKz = 0.0f;
   gyroScaleX = gyroScaleY = gyroScaleZ = 1.0f;
-  Serial.println("[BILGI] Tum Flash kayitlari (Jiroskop + Olcek + Pusula) temizlendi.");
-}
-
-bool finalizeMagSphere(float minX, float maxX, float minY, float maxY, float minZ, float maxZ) {
-  float rx = 0.5f * (maxX - minX);
-  float ry = 0.5f * (maxY - minY);
-  float rz = 0.5f * (maxZ - minZ);
-  if (rx < 15.0f || ry < 15.0f || rz < 12.0f) return false;
-
-  float avgRad = (rx + ry + rz) / 3.0f;
-  if (avgRad < 18.0f || avgRad > 140.0f) return false;
-
-  magOffX = 0.5f * (maxX + minX);
-  magOffY = 0.5f * (maxY + minY);
-  magOffZ = 0.5f * (maxZ + minZ);
-  magScaleX = avgRad / rx;
-  magScaleY = avgRad / ry;
-  magScaleZ = avgRad / rz;
-  magRefFieldUt = avgRad;
-  hasMagCal = true;
-  saveMagCalToFlash();
-  Serial.printf("[9-DOF OK] Pusula kalibre edildi & kaydedildi! Ofset:(%.1f, %.1f, %.1f) Yaricap:%.1f uT\n",
-                magOffX, magOffY, magOffZ, magRefFieldUt);
-  return true;
-}
-
-void calibrateMagnetometer() {
-  if (!hasMagnetometer) {
-    Serial.println("[UYARI] Bu modulde AK8963 manyetometre bulunamadi (MPU-6500).");
-    return;
-  }
-
-  Serial.println("====================================================");
-  Serial.println("[9-DOF PUSULA KALIBRASYONU BASLADI - 10 SANIYE]");
-  Serial.println("Lutfen tufegi yavasca her yone cevirin (8 cizin, yukari-asagi-sag-sol dondurun)...");
-  Serial.println("====================================================");
-
-  float minX = 1e6f, minY = 1e6f, minZ = 1e6f;
-  float maxX = -1e6f, maxY = -1e6f, maxZ = -1e6f;
-  uint32_t startMs = millis();
-
-  while (millis() - startMs < 10000 && !cancelCalFlag) {
-    float mx, my, mz;
-    if (readAlignedMagUt(mx, my, mz)) {
-      if (fabsf(mx) < 600.0f && fabsf(my) < 600.0f && fabsf(mz) < 600.0f) {
-        if (mx < minX) minX = mx; if (mx > maxX) maxX = mx;
-        if (my < minY) minY = my; if (my > maxY) maxY = my;
-        if (mz < minZ) minZ = mz; if (mz > maxZ) maxZ = mz;
-      }
-    }
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
-
-  if (cancelCalFlag) {
-    cancelCalFlag = false;
-    Serial.println("[IPTAL] Pusula kalibrasyonu iptal edildi.");
-    return;
-  }
-
-  if (!finalizeMagSphere(minX, maxX, minY, maxY, minZ, maxZ)) {
-    Serial.println("[HATA] Yeterli donus alinamadi; tufegi tum eksenlerde biraz daha cevirip 'm' ile tekrar deneyin.");
-  }
+  Serial.println("[BILGI] Tum Flash kayitlari (Jiroskop + Olcek) temizlendi.");
 }
 
 // Hareketsizlik Kontrollü Jiroskop & Poz Kalibrasyonu:
@@ -499,9 +327,7 @@ void calibrateGyroAndPose(bool saveToFlashIfStill) {
   double sumGx = 0, sumGy = 0, sumGz = 0;
   double sumAx = 0, sumAy = 0, sumAz = 0;
   double sumTemp = 0;
-  double sumMx = 0, sumMy = 0, sumMz = 0;
   int validImu = 0;
-  int validMag = 0;
 
   int16_t minGx = 32767, maxGx = -32768;
   int16_t minGy = 32767, maxGy = -32768;
@@ -530,15 +356,6 @@ void calibrateGyroAndPose(bool saveToFlashIfStill) {
       if (am > maxAccMag) maxAccMag = am;
       validImu++;
     }
-    if (nineDofEnabled && hasMagnetometer && (i % 5 == 0)) {
-      float mx, my, mz;
-      if (readAlignedMagUt(mx, my, mz)) {
-        sumMx += (mx - magOffX) * magScaleX;
-        sumMy += (my - magOffY) * magScaleY;
-        sumMz += (mz - magOffZ) * magScaleZ;
-        validMag++;
-      }
-    }
     vTaskDelay(msToTicksSafe(2));
   }
 
@@ -563,7 +380,6 @@ void calibrateGyroAndPose(bool saveToFlashIfStill) {
   bool isCleanStill = (maxGyroSpreadDegS < 2.4f) && (accelSpreadG < 0.065f);
 
   if (isCleanStill) {
-    // Önceden farklı sıcaklıkta kayıtlı temiz masa kalibrasyonu varsa termal eğimi öğren!
     if (hasFlashGyroCal) {
       float deltaT = measTempC - biasRefTempC;
       if (fabsf(deltaT) >= 2.5f) {
@@ -588,14 +404,12 @@ void calibrateGyroAndPose(bool saveToFlashIfStill) {
     Serial.printf("[OK] Temiz sabit kalibrasyon tamam! (Temp:%.1fC | Salinim:%.2f deg/s | Flash Kayitli)\n",
                   measTempC, maxGyroSpreadDegS);
   } else if (hasFlashGyroCal) {
-    // Tüfek açılışta elde kıpırdıyordu -> bozuk ofset yerine Flash'taki temiz masa kalibrasyonunu koru!
     gxOffset = baseGxOffset;
     gyOffset = baseGyOffset;
     gzOffset = baseGzOffset;
     Serial.printf("[KORUMA] Acilista hareket algilandi (%.1f deg/s) -> Flash'taki temiz kalibrasyon kullanildi (Temp:%.1fC)!\n",
                   maxGyroSpreadDegS, measTempC);
   } else {
-    // Henüz hiç Flash kaydı yoksa mevcut ölçümü geçici taban al, ama Flash'a kaydetme
     baseGxOffset = gxOffset = measGx;
     baseGyOffset = gyOffset = measGy;
     baseGzOffset = gzOffset = measGz;
@@ -618,17 +432,12 @@ void calibrateGyroAndPose(bool saveToFlashIfStill) {
   float initAccMag = sqrtf(avgAx * avgAx + avgAy * avgAy + avgAz * avgAz);
   smoothAccMag = (initAccMag > 0.85f && initAccMag < 1.15f) ? initAccMag : 1.0f;
 
-  bool initWithMag = nineDofEnabled && hasMagnetometer && hasMagCal && validMag > 0;
-  float avgMx = initWithMag ? (float)(sumMx / validMag) : 0.0f;
-  float avgMy = initWithMag ? (float)(sumMy / validMag) : 0.0f;
-  float avgMz = initWithMag ? (float)(sumMz / validMag) : 0.0f;
-
-  initQuatFromAccelAndMag(avgAx, avgAy, avgAz, avgMx, avgMy, avgMz, initWithMag);
+  initQuatFromAccel(avgAx, avgAy, avgAz);
   bootMillis = millis();
 }
 
 // 360° Jiroskop Ölçek Faktörü Kalibrasyonu:
-// MPU-9250/6500 çiplerindeki +-3%..8% fabrika ölçek hatasını ölçüp Flash'a kaydeder!
+// MPU-9250/6500 çiplerindeki +-1..5% fabrika ölçek hatasını ölçüp Flash'a kaydeder!
 void calibrateGyroScale360() {
   Serial.println("=================================================================");
   Serial.println("[360 DERECE JIROSKOP OLCEK KALIBRASYONU]");
@@ -637,7 +446,6 @@ void calibrateGyroScale360() {
   Serial.println("3) Tam ayni cizgiye gelince 1.5 sn sabit tutun (iptal icin 'x').");
   Serial.println("=================================================================");
 
-  // 1) 1.5 sn başlangıç sabitliği ve anlık sıfır noktası ölçümü
   double sumGx = 0, sumGy = 0, sumGz = 0;
   int cnt = 0;
   uint32_t t0 = millis();
@@ -725,8 +533,6 @@ void calibrateGyroScale360() {
     return;
   }
 
-  // PCB tüfek üzerinde açılı monte edilmişse (ör. >7° eğim), 360° yatay dönüş 2 eksene bölünür;
-  // tek ekseni 360/domVal ile ölçeklemek yanlış çarpan üretir. Toplam 3D vektör açısını raporla!
   if ((domVal / totalNorm) < 0.992) {
     float tiltDeg = acosf((float)(domVal / totalNorm)) * RAD_TO_DEG_F;
     float globalScale = (float)(360.0 / totalNorm);
@@ -742,7 +548,7 @@ void calibrateGyroScale360() {
     return;
   }
 
-  const char* axisName = "Y";
+  const char* axisName = "Z";
   if (absX >= absY && absX >= absZ) {
     gyroScaleX = computedScale;
     axisName = "X";
@@ -761,41 +567,6 @@ void calibrateGyroScale360() {
   hasPrevGyro = false;
 }
 
-bool initAK8963() {
-  writeI2CReg(mpuAddr, 0x6A, 0x00); // USER_CTRL: I2C Master kapat
-  writeI2CReg(mpuAddr, 0x37, 0x02); // INT_PIN_CFG: BYPASS_EN = 1
-  delay(10);
-
-  uint8_t wia = readI2CReg(AK8963_ADDR, AK8963_WIA_REG);
-  if (wia != 0x48) {
-    return false;
-  }
-
-  writeI2CReg(AK8963_ADDR, AK8963_CNTL2_REG, 0x01); // Soft Reset
-  delay(20);
-  writeI2CReg(AK8963_ADDR, AK8963_CNTL1_REG, 0x00); // Power down
-  delay(10);
-  writeI2CReg(AK8963_ADDR, AK8963_CNTL1_REG, 0x0F); // Fuse ROM erişim modu
-  delay(10);
-
-  Wire.beginTransmission(AK8963_ADDR);
-  Wire.write(AK8963_ASAX_REG);
-  if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint16_t)AK8963_ADDR, (uint8_t)3, true) == 3) {
-    uint8_t asaX = Wire.read();
-    uint8_t asaY = Wire.read();
-    uint8_t asaZ = Wire.read();
-    magAsaX = ((asaX - 128) * 0.5f / 128.0f) + 1.0f;
-    magAsaY = ((asaY - 128) * 0.5f / 128.0f) + 1.0f;
-    magAsaZ = ((asaZ - 128) * 0.5f / 128.0f) + 1.0f;
-  }
-
-  writeI2CReg(AK8963_ADDR, AK8963_CNTL1_REG, 0x00); // Power down
-  delay(10);
-  writeI2CReg(AK8963_ADDR, AK8963_CNTL1_REG, 0x16); // 16-bit + 100 Hz sürekli ölçüm (Mode 2)
-  delay(10);
-  return true;
-}
-
 void configureMpuRegisters(bool doSoftReset) {
   if (doSoftReset) {
     writeI2CReg(mpuAddr, 0x6B, 0x80); // Cihaz sıfırlama
@@ -805,13 +576,11 @@ void configureMpuRegisters(bool doSoftReset) {
   vTaskDelay(msToTicksSafe(15));
 
   writeI2CReg(mpuAddr, 0x19, 0x00); // 1 kHz dahili örnekleme
-  writeI2CReg(mpuAddr, 0x1A, 0x02); // Gyro DLPF = 92 Hz (~3.9 ms gecikme)
+  writeI2CReg(mpuAddr, 0x1A, 0x01); // Gyro DLPF = 184 Hz (2.9 ms ultra düşük gecikme, hızlı savurmada keskin tepki)
   writeI2CReg(mpuAddr, 0x1B, 0x10); // Jiroskop: +-1000 deg/s
   writeI2CReg(mpuAddr, 0x1C, 0x08); // İvmeölçer: +-4g
   writeI2CReg(mpuAddr, 0x1D, 0x03); // İvmeölçer DLPF = 41 Hz
 }
-
-bool sensorInitialized = false;
 
 // 9-darbe SCL bus temizleme + STOP koşulu: reset/güç kesintisi sırasında MPU'nun SDA'yı LOW kilitlemesini açar
 void pulseI2cBusClear() {
@@ -859,14 +628,15 @@ void recoverI2cBusAndMpu() {
   configureMpuRegisters(false);
   if (!sensorInitialized) {
     loadGyroCalFromFlash();
-    loadMagCalFromFlash();
     if (hasFlashGyroCal) {
       gxOffset = baseGxOffset;
       gyOffset = baseGyOffset;
       gzOffset = baseGzOffset;
     }
     sensorInitialized = true;
-    Serial.println("[KURTARMA] MPU-9250/6500 sonradan uyandi -> Flash kalibrasyonu yuklendi!");
+    if (serialCanWriteNow()) {
+      Serial.println("[KURTARMA] MPU-9250/6500 sonradan uyandi -> Flash kalibrasyonu yuklendi!");
+    }
   }
 }
 
@@ -877,7 +647,6 @@ void initSensors() {
       Wire.end();
       delay(50);
     }
-    // Reset sonrası MPU-9250 SDA hattını kilitlemiş olabileceği için her zaman önce 9-darbe bus temizliği yap
     pulseI2cBusClear();
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
@@ -906,15 +675,13 @@ void initSensors() {
   configureMpuRegisters(true);
 
   uint8_t whoAmI = readI2CReg(mpuAddr, 0x75);
-  hasMagnetometer = initAK8963();
   loadGyroCalFromFlash();
-  loadMagCalFromFlash();
   sensorInitialized = true;
 
   Serial.println("============================================================");
   Serial.printf("Sensor Adresi : 0x%02X | WHO_AM_I: 0x%02X\n", mpuAddr, whoAmI);
-  Serial.printf("Donanim       : %s\n", hasMagnetometer ? "MPU-9250 (AK8963 Algilandi)" : "MPU-6500");
-  Serial.println("Mimari        : Dual-Core (Core 1: 1000Hz Bortz-Exp IMU | Core 0: Wi-Fi/UDP)");
+  Serial.println("Mod           : SAF 6-DOF + 2 Kademeli Akilli ZUPT (Sifir Pusula Sapmasi)");
+  Serial.println("Mimari        : Core 1: 1000Hz Bortz-Exp IMU | Core 0: 250Hz Unicast UDP");
   Serial.printf("Flash Olcek   : X:%.4f  Y:%.4f  Z:%.4f\n", gyroScaleX, gyroScaleY, gyroScaleZ);
   if (hasFlashGyroCal) {
     Serial.printf("Flash Termal  : Ref:%.1fC | Egim(LSB/C): %.2f, %.2f, %.2f\n",
@@ -925,42 +692,12 @@ void initSensors() {
   calibrateGyroAndPose(true);
 }
 
-// Koning Telafili Exact Lie-Group Quaternion Exponential + Dinamik İvme Korumalı AHRS
-void updateAHRSExact(
+// Koning Telafili Exact Lie-Group Quaternion Exponential + Dinamik İvme Korumalı 6-DOF AHRS
+void updateAHRS6DofExact(
     float gx, float gy, float gz,
     float ax, float ay, float az,
-    float mx, float my, float mz,
-    bool useMagYaw,
     float dt,
     float beta) {
-
-  if (useMagYaw) {
-    float magNorm = sqrtf(mx * mx + my * my + mz * mz);
-    bool fieldOk = (magNorm > 12.0f) && (magNorm < 115.0f)
-                && (fabsf(magNorm - magRefFieldUt) <= magRefFieldUt * 0.55f);
-    magAnomalyActive = !fieldOk;
-
-    if (fieldOk) {
-      float invM = 1.0f / magNorm;
-      float hx, hy, hz;
-      rotateVecByQuat(q0, q1, q2, q3, mx * invM, my * invM, mz * invM, hx, hy, hz);
-      float hLen = hypotf(hx, hy);
-      if (hLen > 0.18f) {
-        float yawErr = atan2f(-hy, hx);
-        yawBiasEarthZ += KI_MAG_YAW * yawErr * dt;
-        yawBiasEarthZ = fmaxf(-0.08f, fminf(0.08f, yawBiasEarthZ));
-
-        float earthYawCorr = KP_MAG_YAW * yawErr + yawBiasEarthZ;
-        float corrX, corrY, corrZ;
-        rotateVecByQuat(q0, -q1, -q2, -q3, 0.0f, 0.0f, earthYawCorr, corrX, corrY, corrZ);
-        gx += corrX;
-        gy += corrY;
-        gz += corrZ;
-      }
-    }
-  } else {
-    magAnomalyActive = false;
-  }
 
   // 1) 2. Derece Bortz Koning + Yamuk (Trapezoidal) Dönüş Vektörü:
   //    dTheta = 0.5*(w_prev + w)*dt + (dt^2 / 12) * (w_prev x w)
@@ -1047,7 +784,7 @@ void updateAHRSExact(
   }
 }
 
-// --- CORE 1 YÜKSEK ÖNCELİKLİ 1000 Hz IMU GÖREVİ (SIFIR WI-FI / UDP / SERIAL BLOKAJI) ---
+// --- CORE 1 YÜKSEK ÖNCELİKLİ 1000 Hz SAF 6-DOF IMU GÖREVİ ---
 #if (configTICK_RATE_HZ < 1000)
 void imuFallbackTimerCb(void* arg) {
   if (imuTaskHandle != nullptr) {
@@ -1064,7 +801,6 @@ void imuTaskFn(void* param) {
 #endif
 
   uint32_t lastImuUs = micros();
-  uint32_t lastMagUs = lastImuUs;
   uint32_t maxDtUsLocal = 0;
   uint32_t samplesLocal = 0;
   uint32_t satLocal = 0;
@@ -1075,7 +811,7 @@ void imuTaskFn(void* param) {
   uint32_t lastStatResetMs = millis();
 
   for (;;) {
-    // 1) Seri porttan istenen kalibrasyon komutlarını güvenli şekilde Core 1'de yürüt (I2C çakışması sıfır)
+    // 1) Seri porttan istenen kalibrasyon komutlarını güvenli şekilde Core 1'de yürüt
     uint8_t req = pendingCal;
     if (req != CAL_NONE) {
       pendingCal = CAL_NONE;
@@ -1091,9 +827,6 @@ void imuTaskFn(void* param) {
         gyroScaleX = gyroScaleY = gyroScaleZ = 1.0f;
         saveGyroCalToFlash();
         Serial.println("[BILGI] Jiroskop olcek carpanlari 1.000 fabrika degerine sifirlandi.");
-      } else if (req == CAL_MAG) {
-        nineDofEnabled = true;
-        calibrateMagnetometer();
       } else if (req == CAL_CLEAR_ALL) {
         clearAllCalFlash();
       }
@@ -1103,14 +836,13 @@ void imuTaskFn(void* param) {
       portEXIT_CRITICAL(&stateMux);
 
       lastImuUs = micros();
-      lastMagUs = lastImuUs;
 #if (configTICK_RATE_HZ >= 1000)
       lastWakeTick = xTaskGetTickCount();
 #endif
       continue;
     }
 
-    // 2) Deterministik 1000 Hz (1 ms) bekleme -> Idle1 asla aç kalmaz, WDT güvenli!
+    // 2) Deterministik 1000 Hz (1 ms) bekleme
 #if (configTICK_RATE_HZ >= 1000)
     vTaskDelayUntil(&lastWakeTick, 1);
 #else
@@ -1119,24 +851,11 @@ void imuTaskFn(void* param) {
 
     uint32_t nowUs = micros();
 
-    // 3) İsteğe bağlı 9-DOF açıksa 100 Hz AK8963 oku
-    if (nineDofEnabled && hasMagnetometer && (nowUs - lastMagUs >= MAG_INTERVAL_US)) {
-      lastMagUs = nowUs;
-      float rMx, rMy, rMz;
-      if (readAlignedMagUt(rMx, rMy, rMz)) {
-        calMx = (rMx - magOffX) * magScaleX;
-        calMy = (rMy - magOffY) * magScaleY;
-        calMz = (rMz - magOffZ) * magScaleZ;
-        magSampleValid = true;
-      }
-    }
-
-    // 4) 1000 Hz MPU-9250 Okuma + Gevşek Kablo (I2C/Brownout) Koruması + 2 Kademeli ZUPT + Bortz Exact AHRS
+    // 3) 1000 Hz MPU-9250/6500 Okuma + Gevşek Kablo Koruması + 2 Kademeli ZUPT + Bortz Exact 6-DOF AHRS
     if (readRawMPU()) {
       bool justRecoveredI2c = (consecI2cErr > 0);
       consecI2cErr = 0;
 
-      // Gevşek VCC/GND jumper temassızlığında MPU-9250 uyku veya +-250 deg/s moduna dönerse otomatik kurtar!
       healthCheckTick++;
       if (justRecoveredI2c || healthCheckTick >= 2000) {
         healthCheckTick = 0;
@@ -1146,7 +865,9 @@ void imuTaskFn(void* param) {
             configureMpuRegisters(false);
             hasPrevGyro = false;
             pwrResetLocal++;
-            Serial.println("[UYARI] MPU-9250 guc kesintisi (gevsek VCC/GND kablosu) algilandi -> +-1000 deg/s yeniden kuruldu!");
+            if (serialCanWriteNow()) {
+              Serial.println("[UYARI] MPU-9250 guc kesintisi algilandi -> +-1000 deg/s yeniden kuruldu!");
+            }
             lastImuUs = micros();
             continue;
           }
@@ -1156,7 +877,6 @@ void imuTaskFn(void* param) {
       uint32_t dtUs = nowUs - lastImuUs;
       lastImuUs = nowUs;
 
-      // Tekil 1-2 ms I2C takılmasında açı kaybını önlemek için gerçek dt kullanılır; uzun kopmada (>25 ms) taşma korunur
       if (dtUs == 0 || dtUs > 25000) {
         dtUs = IMU_INTERVAL_US;
         hasPrevGyro = false;
@@ -1173,11 +893,10 @@ void imuTaskFn(void* param) {
       float ay = rawAy * ACCEL_SCALE;
       float az = rawAz * ACCEL_SCALE;
       float accMag = sqrtf(ax * ax + ay * ay + az * az);
-      smoothAccMag += (accMag - smoothAccMag) * 0.04f; // 1000 Hz uyumlu (~6 Hz)
+      smoothAccMag += (accMag - smoothAccMag) * 0.04f;
       float accDelta = fabsf(accMag - smoothAccMag);
       float accErr1g = fabsf(accMag - 1.0f);
 
-      // Sıcaklık telafili anlık efektif ofset
       float dTemp = smoothTempC - biasRefTempC;
       float effOffX = gxOffset + thermalKx * dTemp;
       float effOffY = gyOffset + thermalKy * dTemp;
@@ -1199,7 +918,6 @@ void imuTaskFn(void* param) {
       float corrZDegS = ((float)rawGz - effOffZ) * GYRO_DEG_SCALE;
       float rateDegS = sqrtf(corrXDegS * corrXDegS + corrYDegS * corrYDegS + corrZDegS * corrZDegS);
 
-      // El titremesini süzüp yalnız sabit DC termal kaymayı gösteren ~0.35 Hz LPF
       lpGxDegS += (corrXDegS - lpGxDegS) * AIM_LP_ALPHA;
       lpGyDegS += (corrYDegS - lpGyDegS) * AIM_LP_ALPHA;
       lpGzDegS += (corrZDegS - lpGzDegS) * AIM_LP_ALPHA;
@@ -1217,7 +935,6 @@ void imuTaskFn(void* param) {
           deskStillCount++;
         } else {
           activeZuptTier = 2;
-          // Artık hatayı tRef tabanlı gxOffset/gyOffset/gzOffset'e işle
           float resX = (float)rawGx - effOffX;
           float resY = (float)rawGy - effOffY;
           float resZ = (float)rawGz - effOffZ;
@@ -1229,7 +946,6 @@ void imuTaskFn(void* param) {
           zuptAnchorGy += ((float)rawGy - zuptAnchorGy) * 0.005f;
           zuptAnchorGz += ((float)rawGz - zuptAnchorGz) * 0.005f;
 
-          // Tüfek masada 4 sn+ tamamen hareketsiz ve sıcaklık >=3C değiştiyse termal eğimi öğren & kaydet (en sık 2 dk'da bir)
           if (deskStillCount < 5000) deskStillCount++;
           uint32_t nowMs = millis();
           if (hasFlashGyroCal && deskStillCount >= 4000 && fabsf(dTemp) >= 3.0f && (nowMs - lastThermalSaveMs >= 120000)) {
@@ -1282,7 +998,6 @@ void imuTaskFn(void* param) {
         aimStillCount = AIM_STILL_SAMPLES_REQ;
       }
 
-      // Güncel telafili ofset + 360° kalibre ölçek çarpanı ile gerçek açısal hız
       effOffX = gxOffset + thermalKx * dTemp;
       effOffY = gyOffset + thermalKy * dTemp;
       effOffZ = gzOffset + thermalKz * dTemp;
@@ -1296,14 +1011,12 @@ void imuTaskFn(void* param) {
       float gz = gzDeg * DEG_TO_RAD_F;
       float gyroMag = sqrtf(gx * gx + gy * gy + gz * gz);
 
-      // Masa kilidinde kalan çok küçük gürültüyü sıfırla (ince nişan hareketini asla yutmaması için 0.12 deg/s)
       if (activeZuptTier == 2 && gyroMag < (0.12f * DEG_TO_RAD_F)) {
         gx = gy = gz = 0.0f;
         gxDeg = gyDeg = gzDeg = 0.0f;
         gyroMag = 0.0f;
       }
 
-      // Hareket/Merkezkaç kapısı: hızlı sallarken beta = 0.0f -> yerçekimi vektörü bozulmaz, Yaw'a hata sızmaz!
       bool inDynamicMotion = (accDelta > MOVE_ACCEL_DELTA_G) || (accErr1g > MOVE_ACCEL_GATE_G) || (gyroMag > MOVE_GYRO_GATE_RAD_S);
       float activeBeta = 0.0f;
       if (millis() - bootMillis < WARMUP_MS) {
@@ -1320,10 +1033,8 @@ void imuTaskFn(void* param) {
         }
       }
 
-      bool useMagNow = nineDofEnabled && hasMagnetometer && hasMagCal && magSampleValid;
-      updateAHRSExact(gx, gy, gz, ax, ay, az, calMx, calMy, calMz, useMagNow, dt, activeBeta);
+      updateAHRS6DofExact(gx, gy, gz, ax, ay, az, dt, activeBeta);
 
-      // Paylaşımlı anlık görüntüyü Core 0 için atomik güncelle (< 1 us)
       uint32_t nowMs = millis();
       bool statRollover = (nowMs - lastStatResetMs >= DEBUG_INTERVAL_MS);
       portENTER_CRITICAL(&stateMux);
@@ -1339,7 +1050,6 @@ void imuTaskFn(void* param) {
       sharedState.scaleY = gyroScaleY;
       sharedState.scaleZ = gyroScaleZ;
       sharedState.zuptTier = activeZuptTier;
-      sharedState.magAnomaly = magAnomalyActive;
       if (statRollover) {
         sharedState.maxDtUs = maxDtUsLocal;
         sharedState.imuSamplesInSec = samplesLocal;
@@ -1388,7 +1098,7 @@ void imuTaskFn(void* param) {
   }
 }
 
-// --- CORE 0 AĞ, UDP VE SERİ PORT GÖREVİ ---
+// --- CORE 0 AĞ, 250 Hz UNICAST UDP VE SERİ PORT GÖREVİ ---
 void sendUDPPacket(bool forceTriggerHigh, const SharedImuSnapshot& snap) {
   if (WiFi.status() != WL_CONNECTED) return;
 
@@ -1429,7 +1139,7 @@ void connectBestWifi() {
   const char* chosenSsid = useHotspot ? HOTSPOT_SSID : HOME_WIFI_SSID;
   const char* chosenPass = useHotspot ? HOTSPOT_PASSWORD : HOME_WIFI_PASS;
 
-  Serial.printf("Baglaniliyor -> %s (%s)\n", chosenSsid, useHotspot ? "Telefon Hotspot" : "Ev Wi-Fi / Yayin");
+  Serial.printf("Baglaniliyor -> %s (%s)\n", chosenSsid, useHotspot ? "Telefon Hotspot" : "Ev Wi-Fi / Unicast");
   WiFi.begin(chosenSsid, chosenPass);
 
   while (WiFi.status() != WL_CONNECTED) {
@@ -1444,15 +1154,13 @@ void connectBestWifi() {
     IPAddress gw = WiFi.gatewayIP();
     targetIp = (gw != IPAddress(0, 0, 0, 0)) ? gw : WiFi.broadcastIP();
   } else {
-    // Ev Wi-Fi modemleri Broadcast (192.168.1.255) paketlerini 100ms DTIM beacon araliginda (10 Hz)
-    // biriktirip toplu saldigi icin dogrudan Unicast (HOME_PC_IP) kullanilir + otomatik Unity kesfi acilir.
     targetIp = HOME_PC_IP;
   }
 
   udp.begin(UDP_PORT);
 
   Serial.println("\n[OK] Wi-Fi baglandi! ESP32 IP: " + WiFi.localIP().toString()
-                 + " -> Hedef UDP IP (Unicast): " + targetIp.toString() + ":" + String(UDP_PORT));
+                 + " -> Hedef UDP IP (Unicast 250Hz): " + targetIp.toString() + ":" + String(UDP_PORT));
 }
 
 void pollUnityClientDiscovery() {
@@ -1462,9 +1170,14 @@ void pollUnityClientDiscovery() {
     int r = udp.read(buf, sizeof(buf));
     if (r >= 4 && buf[0] == 'V' && buf[1] == 'R' && buf[2] == 'A' && buf[3] == 'T') {
       IPAddress remote = udp.remoteIP();
-      if (remote != IPAddress(0, 0, 0, 0) && remote != WiFi.localIP() && remote != targetIp) {
+      if (remote != IPAddress(0, 0, 0, 0) && remote != WiFi.localIP()) {
+        bool ipChanged = (remote != targetIp);
         targetIp = remote;
-        Serial.println("[UNICAST KILIT] Unity istemcisi otomatik kesfedildi -> " + targetIp.toString());
+        unityClientLocked = true;
+        lastUnityHeartbeatMs = millis();
+        if (ipChanged && serialCanWriteNow()) {
+          Serial.println("[UNICAST KILIT] Unity istemcisi otomatik kesfedildi -> " + targetIp.toString());
+        }
       }
     }
     pktSize = udp.parsePacket();
@@ -1484,19 +1197,6 @@ void handleSerialCommands() {
       pendingCal = CAL_SCALE_360;
     } else if (cmd == 'r' || cmd == 'R') {
       pendingCal = CAL_RESET_SCALE;
-    } else if (cmd == '6') {
-      nineDofEnabled = false;
-      Serial.println("[MOD] 6-DOF + 2 Kademeli Akilli ZUPT aktif (Pusula kapali).");
-    } else if (cmd == '9') {
-      if (hasMagnetometer) {
-        nineDofEnabled = true;
-        Serial.printf("[MOD] 9-DOF acildi (%s).\n", hasMagCal ? "Flash kalibresi hazir" : "Kalibre etmek icin 'm' gonderin");
-      } else {
-        Serial.println("[UYARI] Bu modulde manyetometre yok (MPU-6500).");
-      }
-    } else if (cmd == 'm' || cmd == 'M') {
-      cancelCalFlag = false;
-      pendingCal = CAL_MAG;
     } else if (cmd == 'c' || cmd == 'C') {
       pendingCal = CAL_CLEAR_ALL;
     }
@@ -1507,10 +1207,13 @@ void netTaskFn(void* param) {
   (void)param;
 
   connectBestWifi();
-  Serial.println("[KOMUTLAR] 'g': Sabit Masa Kalibresi | 's': 360 Derece Olcek Kalibresi | 'r': Olcek Sifirla | '6'/'9': 6/9-DOF | 'm': Pusula | 'c': Flash Temizle");
+  Serial.println("[KOMUTLAR] 'g': Sabit Masa Kalibresi | 's': 360 Derece Olcek Kalibresi | 'r': Olcek Sifirla | 'c': Flash Temizle");
 
   uint32_t lastUdpUs = micros();
   uint32_t lastDebugMs = millis();
+#if (configTICK_RATE_HZ >= 1000)
+  TickType_t lastNetWake = xTaskGetTickCount();
+#endif
 
   for (;;) {
     uint32_t nowUs = micros();
@@ -1535,12 +1238,13 @@ void netTaskFn(void* param) {
             lastTriggerPressUs = nowUs;
             interruptCounter++;
             triggerEventFlag = true;
-            Serial.printf("[TETIK] GPIO%d onaylandi -> Atis #%lu | Omuz(GPIO%d):%u\n",
-                          TRIGGER_PIN, (unsigned long)interruptCounter, SHOULDER_PIN, shoulderState);
+            if (serialCanWriteNow()) {
+              Serial.printf("[TETIK] GPIO%d onaylandi -> Atis #%lu | Omuz(GPIO%d):%u\n",
+                            TRIGGER_PIN, (unsigned long)interruptCounter, SHOULDER_PIN, shoulderState);
+            }
           }
         }
       } else if (trigLowTracking) {
-        // 12 ms dolmadan HIGH'a döndü -> elektriksel parazit / GPIO16 çapraz etkileşim (crosstalk) reddedildi!
         triggerGlitchRejected++;
         trigLowTracking = false;
         trigLowSamples = 0;
@@ -1570,17 +1274,19 @@ void netTaskFn(void* param) {
         shoulderState = rawShoulder;
         shoulderPendingTracking = false;
         shoulderEventFlag = true;
-        Serial.printf("[OMUZ] GPIO%d -> %s | Tetik(GPIO%d):%u\n",
-                      SHOULDER_PIN,
-                      shoulderState ? "OMUZLANDI (Red Dot ACIK)" : "SERBEST (Red Dot KAPALI)",
-                      TRIGGER_PIN,
-                      trigLow ? 1 : 0);
+        if (serialCanWriteNow()) {
+          Serial.printf("[OMUZ] GPIO%d -> %s | Tetik(GPIO%d):%u\n",
+                        SHOULDER_PIN,
+                        shoulderState ? "OMUZLANDI (Red Dot ACIK)" : "SERBEST (Red Dot KAPALI)",
+                        TRIGGER_PIN,
+                        trigLow ? 1 : 0);
+        }
       }
     } else {
       shoulderPendingTracking = false;
     }
 
-    // 3) 200 Hz UDP Göndericisi (Acil tetik/omuz olayları anında gönderilir)
+    // 3) 250 Hz Deterministik Unicast UDP Göndericisi (Acil tetik/omuz olayları anında gider)
     bool timeForRegularUdp  = (nowUs - lastUdpUs >= UDP_INTERVAL_US);
     bool urgentEventPending = (triggerEventFlag || shoulderEventFlag) && (nowUs - lastUdpUs >= MIN_UDP_GAP_US);
 
@@ -1606,56 +1312,61 @@ void netTaskFn(void* param) {
     if (nowMs - lastDebugMs >= DEBUG_INTERVAL_MS) {
       lastDebugMs = nowMs;
 
-      // 1 Hz hafif alt-ag kesif paketi: PC veya Telefon farkli bir IP almissa Unity "VRAT" yaniti donup Unicast'i kendine kilitler
-      IPAddress bcast = WiFi.broadcastIP();
-      if (bcast != IPAddress(0, 0, 0, 0) && bcast != targetIp) {
-        udp.beginPacket(bcast, UDP_PORT);
-        udp.write((const uint8_t*)&packet, sizeof(packet));
-        udp.endPacket();
+      // Unity "VRAT" yanıtı 6 sn'den uzun süredir gelmiyorsa kilidi aç ve hafif alt-ağ keşif paketi yolla.
+      // Unity bağlıyken broadcast gönderilmez -> telefon hotspot'unda 1 Hz Wi-Fi takılması sıfırlanır!
+      if (unityClientLocked && (nowMs - lastUnityHeartbeatMs > UNICAST_KEEPALIVE_MS)) {
+        unityClientLocked = false;
+      }
+      if (!unityClientLocked) {
+        IPAddress bcast = WiFi.broadcastIP();
+        if (bcast != IPAddress(0, 0, 0, 0) && bcast != targetIp) {
+          udp.beginPacket(bcast, UDP_PORT);
+          udp.write((const uint8_t*)&packet, sizeof(packet));
+          udp.endPacket();
+        }
       }
 
-      SharedImuSnapshot snap;
-      portENTER_CRITICAL(&stateMux);
-      snap = sharedState;
-      portEXIT_CRITICAL(&stateMux);
+      if (serialCanWriteNow()) {
+        SharedImuSnapshot snap;
+        portENTER_CRITICAL(&stateMux);
+        snap = sharedState;
+        portEXIT_CRITICAL(&stateMux);
 
-      if (!snap.calBusy) {
-        uint8_t liveTrig = (digitalRead(TRIGGER_PIN) == LOW) ? 1 : 0;
-        const char* modeTag;
-        if (nineDofEnabled) {
-          modeTag = (hasMagnetometer && hasMagCal)
-              ? (snap.magAnomaly ? "9DOF-MAG_BOZUK" : "9DOF-AKTIF")
-              : "9DOF-KALIBSIZ";
-        } else {
-          modeTag = (snap.zuptTier == 2) ? "6DOF-SABIT"
-                  : (snap.zuptTier == 1 ? "6DOF-NISAN" : "6DOF-HAREKET");
-        }
+        if (!snap.calBusy) {
+          uint8_t liveTrig = (digitalRead(TRIGGER_PIN) == LOW) ? 1 : 0;
+          const char* modeTag = (snap.zuptTier == 2) ? "6DOF-SABIT"
+                              : (snap.zuptTier == 1 ? "6DOF-NISAN" : "6DOF-HAREKET");
 
-        Serial.printf("[%s] %luHz maxDt:%.1fms | Temp:%.1fC | G(%+.2f,%+.2f,%+.2f) | Sc(%.3f,%.3f,%.3f) | T:%u O:%u A:%lu",
-                      modeTag,
-                      (unsigned long)snap.imuSamplesInSec,
-                      snap.maxDtUs * 0.001f,
-                      snap.tempC,
-                      snap.gxDegS, snap.gyDegS, snap.gzDegS,
-                      snap.scaleX, snap.scaleY, snap.scaleZ,
-                      liveTrig, shoulderState, (unsigned long)interruptCounter);
-        if (snap.satCount > 0) {
-          Serial.printf(" | SAT:%lu", (unsigned long)snap.satCount);
+          Serial.printf("[%s] %luHz maxDt:%.1fms | Temp:%.1fC | G(%+.2f,%+.2f,%+.2f) | Sc(%.3f,%.3f,%.3f) | T:%u O:%u A:%lu",
+                        modeTag,
+                        (unsigned long)snap.imuSamplesInSec,
+                        snap.maxDtUs * 0.001f,
+                        snap.tempC,
+                        snap.gxDegS, snap.gyDegS, snap.gzDegS,
+                        snap.scaleX, snap.scaleY, snap.scaleZ,
+                        liveTrig, shoulderState, (unsigned long)interruptCounter);
+          if (snap.satCount > 0) {
+            Serial.printf(" | SAT:%lu", (unsigned long)snap.satCount);
+          }
+          if (snap.i2cErrCount > 0) {
+            Serial.printf(" | I2C_ERR:%lu", (unsigned long)snap.i2cErrCount);
+          }
+          if (snap.pwrResetCount > 0) {
+            Serial.printf(" | PWR_RST:%lu", (unsigned long)snap.pwrResetCount);
+          }
+          if (triggerGlitchRejected > 0) {
+            Serial.printf(" | PARAZIT_ENGEL:%lu", (unsigned long)triggerGlitchRejected);
+          }
+          Serial.println();
         }
-        if (snap.i2cErrCount > 0) {
-          Serial.printf(" | I2C_ERR:%lu", (unsigned long)snap.i2cErrCount);
-        }
-        if (snap.pwrResetCount > 0) {
-          Serial.printf(" | PWR_RST:%lu", (unsigned long)snap.pwrResetCount);
-        }
-        if (triggerGlitchRejected > 0) {
-          Serial.printf(" | PARAZIT_ENGEL:%lu", (unsigned long)triggerGlitchRejected);
-        }
-        Serial.println();
       }
     }
 
+#if (configTICK_RATE_HZ >= 1000)
+    vTaskDelayUntil(&lastNetWake, 1);
+#else
     vTaskDelay(msToTicksSafe(1));
+#endif
   }
 }
 
@@ -1682,7 +1393,7 @@ void setup() {
   triggerArmed = (digitalRead(TRIGGER_PIN) == HIGH);
   shoulderState = (digitalRead(SHOULDER_PIN) == LOW) ? 1 : 0;
 
-  // Core 1: İzole 1000 Hz IMU Görevi (Yüksek Öncelik = 6)
+  // Core 1: İzole 1000 Hz Saf 6-DOF IMU Görevi (Yüksek Öncelik = 6)
   xTaskCreatePinnedToCore(
       imuTaskFn,
       "IMU_1kHz_Core1",
@@ -1701,7 +1412,7 @@ void setup() {
   }
 #endif
 
-  // Core 0: Wi-Fi + 200 Hz UDP + Serial Görevi (Öncelik = 2)
+  // Core 0: Wi-Fi + 250 Hz Unicast UDP + Tetik/Omuz + Serial Görevi (Öncelik = 2)
   xTaskCreatePinnedToCore(
       netTaskFn,
       "NET_UDP_Core0",
@@ -1713,6 +1424,6 @@ void setup() {
 }
 
 void loop() {
-  // Tüm iş Core 1 (IMU) ve Core 0 (Wi-Fi/UDP) görevlerine bölündü
+  // Tüm iş Core 1 (1000 Hz IMU) ve Core 0 (250 Hz UDP) görevlerine bölündü
   vTaskDelay(pdMS_TO_TICKS(1000));
 }

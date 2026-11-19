@@ -39,9 +39,9 @@ namespace VRAtis.Weapons
         [Range(0.08f, 0.8f)]
         [SerializeField] private float aimTransitionDurationSec = 0.24f;
 
-        [Tooltip("Red Dot camının arkasından gözün duracağı mesafe (metre).")]
+        [Tooltip("Red Dot camının arkasından gözün duracağı mesafe (metre). 0.215 m = doğal dipçik/yanak hizası.")]
         [Range(0.06f, 0.35f)]
-        [SerializeField] private float eyeReliefMeters = 0.115f;
+        [SerializeField] private float eyeReliefMeters = 0.215f;
 
         [Tooltip("Gerekirse nişan göz yüksekliği ince ayarı (metre).")]
         [Range(-0.05f, 0.05f)]
@@ -80,6 +80,10 @@ namespace VRAtis.Weapons
 
         private void Awake()
         {
+            // Eski sahne belleğinde kalan aşırı yakın 0.115 m (fişek tahliye üstü) değerini doğal dipçik mesafesine yükselt
+            if (Mathf.Approximately(eyeReliefMeters, 0.115f))
+                eyeReliefMeters = 0.215f;
+
             ResolveReferences();
             CacheReadyPoseAndSightOffset();
             ApplyReticlePowerIfChanged(0f);

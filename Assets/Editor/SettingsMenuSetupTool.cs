@@ -20,7 +20,7 @@ namespace VRAtis.EditorTools
     {
         private const string UiTexDir = "Assets/UI/Textures";
         private const string CanvasName = "SettingsUI_Canvas";
-        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V9_Done";
+        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V10_Done";
 
         private static readonly Color PanelBgColor = new Color(0.05f, 0.08f, 0.12f, 0.94f);
         private static readonly Color HeaderBgColor = new Color(0.09f, 0.14f, 0.21f, 0.98f);
@@ -270,6 +270,7 @@ namespace VRAtis.EditorTools
             so.FindProperty("timeOfDayController").objectReferenceValue = Object.FindAnyObjectByType<DynamicTimeOfDay>();
             so.FindProperty("environmentManager").objectReferenceValue = Object.FindAnyObjectByType<EnvironmentManager>();
             so.FindProperty("stereoRig").objectReferenceValue = Object.FindAnyObjectByType<CardboardStereoRig>();
+            so.FindProperty("headTracker").objectReferenceValue = Object.FindAnyObjectByType<HeadTrackingCameraController>();
             so.FindProperty("opticalTracker").objectReferenceValue = Object.FindAnyObjectByType<OpticalRifleTracker>();
             so.FindProperty("targetRangeManager").objectReferenceValue = rangeMgr;
             so.FindProperty("primaryEyeRoot").objectReferenceValue = primaryRootRt;
@@ -604,11 +605,11 @@ namespace VRAtis.EditorTools
         {
             GameObject cardGo = CreateRoundedPanel("VRCalibrationCard", parent, roundedSprite, CardBgColor);
             LayoutElement cardLe = cardGo.AddComponent<LayoutElement>();
-            cardLe.minHeight = 190f;
-            cardLe.preferredHeight = 190f;
+            cardLe.minHeight = 250f;
+            cardLe.preferredHeight = 250f;
 
             VerticalLayoutGroup cardLayout = cardGo.AddComponent<VerticalLayoutGroup>();
-            cardLayout.padding = new RectOffset(18, 18, 14, 14);
+            cardLayout.padding = new RectOffset(18, 18, 12, 12);
             cardLayout.spacing = 10f;
             cardLayout.childControlWidth = true;
             cardLayout.childControlHeight = true;
@@ -652,6 +653,11 @@ namespace VRAtis.EditorTools
             Image splitBg = vrSplit.GetComponent<Image>();
             if (splitBg != null)
                 splitBg.color = HeaderBgColor;
+
+            Toggle compassLock = CreateToggleRow("CompassNorthCheckbox", cardGo.transform, roundedSprite, boxSprite, markSprite, font, "Oda Yönü Sabitle (Telefon 9-DOF Pusula)", null, 52f);
+            Image compassBg = compassLock.GetComponent<Image>();
+            if (compassBg != null)
+                compassBg.color = HeaderBgColor;
         }
 
         private static GameObject CreateSubPageContainer(string name, Transform parent, float spacing)
