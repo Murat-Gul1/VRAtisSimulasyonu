@@ -60,9 +60,19 @@ namespace VRAtis.UI
             public Button OpticDomMinusButton;
             public Text OpticDomValueText;
             public Button OpticDomPlusButton;
+            public GameObject TargetTypeMenuPage;
+            public Button TargetTypeBackButton;
+            public Text TargetTypeSummaryText;
+            public Button OpenGongTargetButton;
+            public Image OpenGongTargetBg;
+            public Button OpenHumanMetalTargetButton;
+            public Image OpenHumanMetalTargetBg;
+            public Button OpenSoldierTargetButton;
+            public Image OpenSoldierTargetBg;
             public GameObject TargetCategoryPage;
             public Button OpenTargetsButton;
             public Button TargetBackButton;
+            public Text TargetPageSubTitleText;
             public Text TargetSummaryText;
             public Button[] TargetCountButtons;
             public Image[] TargetCountBg;
@@ -71,14 +81,21 @@ namespace VRAtis.UI
             public Button TargetDistMinusButton;
             public Text TargetDistValueText;
             public Button TargetDistPlusButton;
+            public Text TargetSpacingHeaderText;
             public Button[] TargetSpacingButtons;
             public Image[] TargetSpacingBg;
             public Button TargetSpacingMinusButton;
             public Text TargetSpacingValueText;
             public Button TargetSpacingPlusButton;
+            public GameObject SoldierModeSection;
+            public Button SoldierLateralButton;
+            public Image SoldierLateralBg;
+            public Button SoldierAssaultButton;
+            public Image SoldierAssaultBg;
             public Button TargetClassicRangeButton;
             public Image TargetClassicRangeBg;
             public Button TargetClearMarksButton;
+            public Text TargetClearMarksLabel;
             public GameObject CalibrationBannerRoot;
             public RectTransform CalibrationBannerRect;
             public Image CalibrationAccentBar;
@@ -99,6 +116,7 @@ namespace VRAtis.UI
         private static readonly int[] TargetDistancePresets = { 20, 25, 50, 100, 200 };
         private static readonly int[] TargetSpacingPresets = { 1, 3, 5, 10, 20, 30 };
         private static readonly Color ActiveChipColor = new Color(0.24f, 0.72f, 0.56f, 0.96f);
+        private static readonly Color ActiveAssaultColor = new Color(0.84f, 0.26f, 0.22f, 0.98f);
         private static readonly Color InactiveChipColor = new Color(0.11f, 0.16f, 0.22f, 0.92f);
 
         [Header("Ana UI Kökü")]
@@ -234,31 +252,53 @@ namespace VRAtis.UI
 
         public void ShowMainCategoryPage()
         {
-            SetCategoryPageActive(showMain: true, showWeather: false, showOptical: false, showTargets: false);
+            SetCategoryPageActive(showMain: true, showWeather: false, showOptical: false, showTargetTypes: false, showTargets: false);
             SyncVrWidgetsToViews();
         }
 
         public void ShowWeatherCategoryPage()
         {
-            SetCategoryPageActive(showMain: false, showWeather: true, showOptical: false, showTargets: false);
+            SetCategoryPageActive(showMain: false, showWeather: true, showOptical: false, showTargetTypes: false, showTargets: false);
             SyncWeatherTogglesToViews();
             SyncTimeWidgetsFromScene();
         }
 
         public void ShowOpticalCategoryPage()
         {
-            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: true, showTargets: false);
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: true, showTargetTypes: false, showTargets: false);
             _nextOpticalUiRefreshTime = 0f;
             SyncOpticalWidgetsToViews();
         }
 
-        public void ShowTargetCategoryPage()
+        public void ShowTargetTypeMenuPage()
         {
-            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargets: true);
+            // Fallback gracefully if an older scene Canvas without TargetTypeMenuPage is loaded
+            bool hasTypeMenu = _primaryView != null && _primaryView.TargetTypeMenuPage != null;
+            if (!hasTypeMenu)
+            {
+                ShowTargetCategoryPage();
+                return;
+            }
+
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargetTypes: true, showTargets: false);
             SyncTargetWidgetsToViews();
         }
 
-        private void SetCategoryPageActive(bool showMain, bool showWeather, bool showOptical, bool showTargets)
+        public void ShowTargetCategoryPage()
+        {
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargetTypes: false, showTargets: true);
+            SyncTargetWidgetsToViews();
+        }
+
+        private void OpenTargetDrillForKind(TargetKind kind)
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.SetTargetKind(kind);
+            ShowTargetCategoryPage();
+        }
+
+        private void SetCategoryPageActive(bool showMain, bool showWeather, bool showOptical, bool showTargetTypes, bool showTargets)
         {
             for (int i = 0; i < _views.Count; i++)
             {
@@ -268,6 +308,8 @@ namespace VRAtis.UI
                     _views[i].WeatherCategoryPage.SetActive(showWeather);
                 if (_views[i].OpticalCategoryPage != null)
                     _views[i].OpticalCategoryPage.SetActive(showOptical);
+                if (_views[i].TargetTypeMenuPage != null)
+                    _views[i].TargetTypeMenuPage.SetActive(showTargetTypes);
                 if (_views[i].TargetCategoryPage != null)
                     _views[i].TargetCategoryPage.SetActive(showTargets);
             }
@@ -295,6 +337,7 @@ namespace VRAtis.UI
             Transform mainTr = contentTr != null ? contentTr.Find("MainCategoryPage") : null;
             Transform weatherTr = contentTr != null ? contentTr.Find("WeatherCategoryPage") : null;
             Transform opticalTr = contentTr != null ? contentTr.Find("OpticalCategoryPage") : null;
+            Transform targetTypeTr = contentTr != null ? contentTr.Find("TargetTypeMenuPage") : null;
             Transform targetTr = contentTr != null ? contentTr.Find("TargetCategoryPage") : null;
             Transform vrCardTr = mainTr != null ? mainTr.Find("VRCalibrationCard") : null;
 
@@ -309,6 +352,15 @@ namespace VRAtis.UI
                 MainCategoryPage = mainTr != null ? mainTr.gameObject : null,
                 WeatherCategoryPage = weatherTr != null ? weatherTr.gameObject : null,
                 OpticalCategoryPage = opticalTr != null ? opticalTr.gameObject : null,
+                TargetTypeMenuPage = targetTypeTr != null ? targetTypeTr.gameObject : null,
+                TargetTypeBackButton = FindChildComponent<Button>(targetTypeTr, "TargetTypeSubHeader/BackButton"),
+                TargetTypeSummaryText = FindChildComponent<Text>(targetTypeTr, "TargetTypeSummaryBox/TargetTypeSummaryText"),
+                OpenGongTargetButton = FindChildComponent<Button>(targetTypeTr, "GongTargetMenuButton"),
+                OpenGongTargetBg = FindChildComponent<Image>(targetTypeTr, "GongTargetMenuButton"),
+                OpenHumanMetalTargetButton = FindChildComponent<Button>(targetTypeTr, "HumanMetalTargetMenuButton"),
+                OpenHumanMetalTargetBg = FindChildComponent<Image>(targetTypeTr, "HumanMetalTargetMenuButton"),
+                OpenSoldierTargetButton = FindChildComponent<Button>(targetTypeTr, "SoldierTargetMenuButton"),
+                OpenSoldierTargetBg = FindChildComponent<Image>(targetTypeTr, "SoldierTargetMenuButton"),
                 TargetCategoryPage = targetTr != null ? targetTr.gameObject : null,
                 OpenWeatherButton = FindChildComponent<Button>(mainTr, "WeatherMenuButton"),
                 OpenOpticalButton = FindChildComponent<Button>(mainTr, "OpticalMenuButton"),
@@ -316,6 +368,7 @@ namespace VRAtis.UI
                 WeatherBackButton = FindChildComponent<Button>(weatherTr, "WeatherSubHeader/BackButton"),
                 OpticalBackButton = FindChildComponent<Button>(opticalTr, "OpticSubHeader/BackButton"),
                 TargetBackButton = FindChildComponent<Button>(targetTr, "TargetSubHeader/BackButton"),
+                TargetPageSubTitleText = FindChildComponent<Text>(targetTr, "TargetSubHeader/SubTitle"),
                 TargetSummaryText = FindChildComponent<Text>(targetTr, "TargetSummaryBox/TargetSummaryText"),
                 TargetCountButtons = new Button[TargetCountPresets.Length],
                 TargetCountBg = new Image[TargetCountPresets.Length],
@@ -324,14 +377,21 @@ namespace VRAtis.UI
                 TargetDistMinusButton = FindChildComponent<Button>(targetTr, "TargetDistStepRow/DistMinusButton"),
                 TargetDistValueText = FindChildComponent<Text>(targetTr, "TargetDistStepRow/ValueBox/DistValueText"),
                 TargetDistPlusButton = FindChildComponent<Button>(targetTr, "TargetDistStepRow/DistPlusButton"),
+                TargetSpacingHeaderText = FindChildComponent<Text>(targetTr, "TargetSpacingHeader"),
                 TargetSpacingButtons = new Button[TargetSpacingPresets.Length],
                 TargetSpacingBg = new Image[TargetSpacingPresets.Length],
                 TargetSpacingMinusButton = FindChildComponent<Button>(targetTr, "TargetSpacingStepRow/SpacingMinusButton"),
                 TargetSpacingValueText = FindChildComponent<Text>(targetTr, "TargetSpacingStepRow/ValueBox/SpacingValueText"),
                 TargetSpacingPlusButton = FindChildComponent<Button>(targetTr, "TargetSpacingStepRow/SpacingPlusButton"),
+                SoldierModeSection = targetTr != null && targetTr.Find("SoldierModeSection") != null ? targetTr.Find("SoldierModeSection").gameObject : null,
+                SoldierLateralButton = FindChildComponent<Button>(targetTr, "SoldierModeSection/SoldierModeRow/SoldierLateralButton"),
+                SoldierLateralBg = FindChildComponent<Image>(targetTr, "SoldierModeSection/SoldierModeRow/SoldierLateralButton"),
+                SoldierAssaultButton = FindChildComponent<Button>(targetTr, "SoldierModeSection/SoldierModeRow/SoldierAssaultButton"),
+                SoldierAssaultBg = FindChildComponent<Image>(targetTr, "SoldierModeSection/SoldierModeRow/SoldierAssaultButton"),
                 TargetClassicRangeButton = FindChildComponent<Button>(targetTr, "TargetUtilityRow/ClassicRangeButton"),
                 TargetClassicRangeBg = FindChildComponent<Image>(targetTr, "TargetUtilityRow/ClassicRangeButton"),
                 TargetClearMarksButton = FindChildComponent<Button>(targetTr, "TargetUtilityRow/ClearMarksButton"),
+                TargetClearMarksLabel = FindChildComponent<Text>(targetTr, "TargetUtilityRow/ClearMarksButton/Label"),
                 CloseWindowButton = FindChildComponent<Button>(winTr, "HeaderBar/CloseButton"),
                 RainCheckbox = FindChildComponent<Toggle>(weatherTr, "RainCheckbox"),
                 FogCheckbox = FindChildComponent<Toggle>(weatherTr, "FogCheckbox"),
@@ -399,10 +459,14 @@ namespace VRAtis.UI
             BindClick(view.GearButton, ToggleWindow);
             BindClick(view.OpenWeatherButton, ShowWeatherCategoryPage);
             BindClick(view.OpenOpticalButton, ShowOpticalCategoryPage);
-            BindClick(view.OpenTargetsButton, ShowTargetCategoryPage);
+            BindClick(view.OpenTargetsButton, ShowTargetTypeMenuPage);
             BindClick(view.WeatherBackButton, ShowMainCategoryPage);
             BindClick(view.OpticalBackButton, ShowMainCategoryPage);
-            BindClick(view.TargetBackButton, ShowMainCategoryPage);
+            BindClick(view.TargetTypeBackButton, ShowMainCategoryPage);
+            BindClick(view.OpenGongTargetButton, () => OpenTargetDrillForKind(TargetKind.SteelGong));
+            BindClick(view.OpenHumanMetalTargetButton, () => OpenTargetDrillForKind(TargetKind.MetalHumanSilhouette));
+            BindClick(view.OpenSoldierTargetButton, () => OpenTargetDrillForKind(TargetKind.MovingEnemySoldier));
+            BindClick(view.TargetBackButton, view.TargetTypeMenuPage != null ? (Action)ShowTargetTypeMenuPage : ShowMainCategoryPage);
             BindClick(view.CloseWindowButton, CloseWindow);
             BindClick(view.OpticZeroButton, HandleOpticZero);
             BindClick(view.OpticModeButton, CycleOpticMode);
@@ -436,6 +500,8 @@ namespace VRAtis.UI
 
             BindClick(view.TargetSpacingMinusButton, () => NudgeTargetSpacing(-1f));
             BindClick(view.TargetSpacingPlusButton, () => NudgeTargetSpacing(+1f));
+            BindClick(view.SoldierLateralButton, () => HandleSoldierAssaultModeSelected(false));
+            BindClick(view.SoldierAssaultButton, () => HandleSoldierAssaultModeSelected(true));
             BindClick(view.TargetClassicRangeButton, HandleClassicRangeSelected);
             BindClick(view.TargetClearMarksButton, HandleClearTargetMarks);
 
@@ -566,8 +632,8 @@ namespace VRAtis.UI
                     view.WindowRect.anchorMax = new Vector2(0.5f, 0.5f);
                     view.WindowRect.pivot = new Vector2(0.5f, 0.5f);
                     view.WindowRect.anchoredPosition = Vector2.zero;
-                    view.WindowRect.sizeDelta = new Vector2(430f, 560f);
-                    view.WindowRect.localScale = new Vector3(0.82f, 0.82f, 1f);
+                    view.WindowRect.sizeDelta = new Vector2(430f, 600f);
+                    view.WindowRect.localScale = new Vector3(0.80f, 0.80f, 1f);
                 }
                 else
                 {
@@ -575,7 +641,7 @@ namespace VRAtis.UI
                     view.WindowRect.anchorMax = new Vector2(1f, 0f);
                     view.WindowRect.pivot = new Vector2(1f, 0f);
                     view.WindowRect.anchoredPosition = new Vector2(-28f, 104f);
-                    view.WindowRect.sizeDelta = new Vector2(430f, 560f);
+                    view.WindowRect.sizeDelta = new Vector2(430f, 600f);
                     view.WindowRect.localScale = Vector3.one;
                 }
             }
@@ -804,6 +870,14 @@ namespace VRAtis.UI
             SyncTargetWidgetsToViews();
         }
 
+        private void HandleSoldierAssaultModeSelected(bool assaultMode)
+        {
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.SetSoldierAssaultMode(assaultMode);
+            SyncTargetWidgetsToViews();
+        }
+
         private void HandleClearTargetMarks()
         {
             TargetRangeManager mgr = ResolveTargetRangeManager();
@@ -814,6 +888,17 @@ namespace VRAtis.UI
         private void SyncTargetWidgetsToViews()
         {
             TargetRangeManager mgr = ResolveTargetRangeManager();
+            TargetKind kind = mgr != null ? mgr.ActiveTargetKind : TargetKind.SteelGong;
+            bool isSilhouette = kind == TargetKind.MetalHumanSilhouette;
+            bool isSoldier = kind == TargetKind.MovingEnemySoldier;
+            bool isAssault = mgr != null && mgr.IsSoldierAssaultMode;
+            string kindLabel = isSoldier
+                ? (isAssault ? "Asker (HÜCUM)" : "Asker (Yan Koşu)")
+                : (isSilhouette ? "İnsan Hedef (Metal)" : "Gong Hedef");
+            string subTitleUpper = isSoldier
+                ? (isAssault ? "ASKER — HÜCUM MODU" : "ASKER (HAREKETLİ)")
+                : (isSilhouette ? "İNSAN HEDEF (METAL)" : "GONG HEDEF");
+
             bool customActive = mgr != null && mgr.IsCustomDrillActive;
             int count = mgr != null ? mgr.TargetCount : 1;
             int distInt = mgr != null ? Mathf.RoundToInt(mgr.DistanceMeters) : 25;
@@ -823,21 +908,59 @@ namespace VRAtis.UI
             if (mgr == null)
                 summary = "TargetRangeManager bulunamadı";
             else if (!customActive)
-                summary = "Aktif: Klasik Poligon (25 / 100 / 300 / 500 m)";
+                summary = isSoldier
+                    ? $"{kindLabel}  •  Çoklu Mesafe (25-250 m)"
+                    : $"{kindLabel}  •  Klasik Poligon (25-500 m)";
             else if (count <= 0)
-                summary = "Aktif: Sahada Hedef Yok (0) — Drill için 1-6 seçin";
+                summary = $"{kindLabel}  •  Sahada Hedef Yok (0)";
+            else if (isSoldier)
+                summary = isAssault
+                    ? $"{kindLabel}  •  {count} Asker  •  {distInt} m  •  {spacingInt} m zikzak"
+                    : $"{kindLabel}  •  {count} Asker  •  {distInt} m  •  {spacingInt} m alan";
             else
-                summary = $"Drill: {count} Hedef  •  {distInt} m Mesafe  •  {spacingInt} m Aralık";
+                summary = $"{kindLabel}  •  {count} Hedef  •  {distInt} m  •  {spacingInt} m";
+
+            Color activeCardTint = new Color(0.14f, 0.30f, 0.26f, 0.96f);
 
             for (int v = 0; v < _views.Count; v++)
             {
                 UiView view = _views[v];
+                if (view.TargetTypeSummaryText != null)
+                    view.TargetTypeSummaryText.text = summary;
+                if (view.TargetPageSubTitleText != null)
+                    view.TargetPageSubTitleText.text = subTitleUpper;
+                if (view.OpenGongTargetBg != null)
+                    view.OpenGongTargetBg.color = (!isSilhouette && !isSoldier) ? activeCardTint : InactiveChipColor;
+                if (view.OpenHumanMetalTargetBg != null)
+                    view.OpenHumanMetalTargetBg.color = isSilhouette ? activeCardTint : InactiveChipColor;
+                if (view.OpenSoldierTargetBg != null)
+                    view.OpenSoldierTargetBg.color = isSoldier ? activeCardTint : InactiveChipColor;
+
                 if (view.TargetSummaryText != null)
                     view.TargetSummaryText.text = summary;
                 if (view.TargetDistValueText != null)
                     view.TargetDistValueText.text = $"{distInt} m";
+                if (view.TargetSpacingHeaderText != null)
+                {
+                    view.TargetSpacingHeaderText.text = isSoldier
+                        ? (isAssault ? "ZİKZAK GENİŞLİĞİ (HÜCUM: 1 - 30 m)" : "KOŞU ALANI (SAĞA - SOLA: 1 - 30 m)")
+                        : "HEDEF ARALIĞI (YAN YANA: 1 - 30 m)";
+                }
                 if (view.TargetSpacingValueText != null)
-                    view.TargetSpacingValueText.text = $"{spacingInt} m aralık";
+                {
+                    view.TargetSpacingValueText.text = isSoldier
+                        ? (isAssault ? $"{spacingInt} m zikzak" : $"{spacingInt} m koşu alanı")
+                        : $"{spacingInt} m aralık";
+                }
+                if (view.TargetClearMarksLabel != null)
+                    view.TargetClearMarksLabel.text = isSoldier ? "Askerleri Yenile" : "İzleri Sıfırla";
+
+                if (view.SoldierModeSection != null)
+                    view.SoldierModeSection.SetActive(isSoldier);
+                if (view.SoldierLateralBg != null)
+                    view.SoldierLateralBg.color = !isAssault ? ActiveChipColor : InactiveChipColor;
+                if (view.SoldierAssaultBg != null)
+                    view.SoldierAssaultBg.color = isAssault ? ActiveAssaultColor : InactiveChipColor;
 
                 for (int i = 0; i < TargetCountPresets.Length; i++)
                 {

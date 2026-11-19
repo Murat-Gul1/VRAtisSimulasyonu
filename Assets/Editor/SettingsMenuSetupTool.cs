@@ -20,7 +20,7 @@ namespace VRAtis.EditorTools
     {
         private const string UiTexDir = "Assets/UI/Textures";
         private const string CanvasName = "SettingsUI_Canvas";
-        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V5_Done";
+        private const string AutoSetupVersionKey = "VRAtis_SettingsUI_V8_Done";
 
         private static readonly Color PanelBgColor = new Color(0.06f, 0.09f, 0.13f, 0.90f);
         private static readonly Color HeaderBgColor = new Color(0.09f, 0.14f, 0.20f, 0.96f);
@@ -33,6 +33,13 @@ namespace VRAtis.EditorTools
         static SettingsMenuSetupTool()
         {
             EditorApplication.delayCall += TryAutoSetupOnce;
+            EditorApplication.playModeStateChanged += OnPlayModeChanged;
+        }
+
+        private static void OnPlayModeChanged(PlayModeStateChange state)
+        {
+            if (state == PlayModeStateChange.EnteredEditMode)
+                EditorApplication.delayCall += TryAutoSetupOnce;
         }
 
         private static void TryAutoSetupOnce()
@@ -120,7 +127,7 @@ namespace VRAtis.EditorTools
             winRt.anchorMax = new Vector2(1f, 0f);
             winRt.pivot = new Vector2(1f, 0f);
             winRt.anchoredPosition = new Vector2(-28f, 104f);
-            winRt.sizeDelta = new Vector2(430f, 560f);
+            winRt.sizeDelta = new Vector2(430f, 600f);
 
             // Header Bar
             GameObject headerGo = CreateRoundedPanel("HeaderBar", windowGo.transform, roundedSprite, HeaderBgColor);
@@ -193,7 +200,7 @@ namespace VRAtis.EditorTools
                 targetSprite,
                 font,
                 "Hedef",
-                "Hedef mesafesi, sayısı (0-6) ve yan yana aralık ayarı");
+                "Gong Hedef, İnsan Hedef (Metal) ve Hareketli Asker");
 
             CreateVrCalibrationCard(mainPage.transform, roundedSprite, checkRingSprite, checkMarkSprite, font);
 
@@ -230,10 +237,13 @@ namespace VRAtis.EditorTools
             // Page 3: Optical Camera & LED Tracker Sub-Panel
             GameObject opticalPage = BuildOpticalCategoryPage(contentGo.transform, roundedSprite, checkRingSprite, checkMarkSprite, font);
 
-            // Page 4: Sport Drill & Range Targets Sub-Panel ("Hedef")
+            // Page 4A: Target Type Picker Sub-Panel ("Gong Hedef" / "İnsan Hedef (Metal)")
+            GameObject targetTypePage = BuildTargetTypeMenuPage(contentGo.transform, roundedSprite, targetSprite, font);
+
+            // Page 4B: Sport Drill & Range Targets Detail Sub-Panel (shared by Gong & Metal Human Silhouette)
             GameObject targetPage = BuildTargetCategoryPage(contentGo.transform, roundedSprite, font);
 
-            TargetRangeManager rangeMgr = SteelGongSetupTool.EnsureTargetRangeManager(null, null);
+            TargetRangeManager rangeMgr = SteelGongSetupTool.EnsureTargetRangeManager(null, null, null);
 
             // Wire controller onto Canvas root
             SettingsMenuController menuCtrl = canvasGo.AddComponent<SettingsMenuController>();
@@ -248,6 +258,7 @@ namespace VRAtis.EditorTools
 
             weatherPage.SetActive(false);
             opticalPage.SetActive(false);
+            targetTypePage.SetActive(false);
             targetPage.SetActive(false);
             windowGo.SetActive(false);
 
@@ -255,7 +266,7 @@ namespace VRAtis.EditorTools
             EditorSceneManager.MarkSceneDirty(canvasGo.scene);
             EditorSceneManager.SaveOpenScenes();
             EditorPrefs.SetBool(AutoSetupVersionKey, true);
-            Debug.Log("[SettingsMenuSetupTool] V5 Kuruldu: Hedef Drill Menüsü (0-6 hedef, 20-200m+ mesafe, 1-30m aralık) + VR Stereo Ayarlar!");
+            Debug.Log("[SettingsMenuSetupTool] V6 Kuruldu: Hedef Tipi Menüsü (Gong Hedef + İnsan Hedef (Metal)) + VR Stereo Ayarlar!");
         }
 
         private static void EnsureEventSystem()
@@ -558,43 +569,116 @@ namespace VRAtis.EditorTools
             return page;
         }
 
+        private static GameObject BuildTargetTypeMenuPage(Transform parent, Sprite roundedSprite, Sprite targetSprite, Font font)
+        {
+            GameObject page = CreateSubPageContainer("TargetTypeMenuPage", parent, 10f);
+            CreateSubPageHeader("TargetTypeSubHeader", page.transform, roundedSprite, font, "HEDEF TİPİ");
+
+            GameObject summaryBox = CreateRoundedPanel("TargetTypeSummaryBox", page.transform, roundedSprite, HeaderBgColor);
+            LayoutElement sumLe = summaryBox.AddComponent<LayoutElement>();
+            sumLe.minHeight = 36f;
+            sumLe.preferredHeight = 36f;
+            Text sumTxt = CreateText("TargetTypeSummaryText", summaryBox.transform, font, "Aktif: Gong Hedef  •  Klasik Poligon", 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(sumTxt.GetComponent<RectTransform>());
+
+            CreateCategoryButton(
+                "GongTargetMenuButton",
+                page.transform,
+                roundedSprite,
+                targetSprite,
+                font,
+                "Gong Hedef",
+                "Zincirli sallanan AR500 yuvarlak metal gong");
+
+            CreateCategoryButton(
+                "HumanMetalTargetMenuButton",
+                page.transform,
+                roundedSprite,
+                targetSprite,
+                font,
+                "İnsan Hedef (Metal)",
+                "Yere çakılı standda AR500 metal insan silueti");
+
+            CreateCategoryButton(
+                "SoldierTargetMenuButton",
+                page.transform,
+                roundedSprite,
+                targetSprite,
+                font,
+                "Asker",
+                "Hareketli / koşan KSK düşman askeri (Kafa + Gövde vuruşu)");
+
+            return page;
+        }
+
         private static GameObject BuildTargetCategoryPage(Transform parent, Sprite roundedSprite, Font font)
         {
-            GameObject page = CreateSubPageContainer("TargetCategoryPage", parent, 6f);
+            GameObject page = CreateSubPageContainer("TargetCategoryPage", parent, 5f);
             CreateSubPageHeader("TargetSubHeader", page.transform, roundedSprite, font, "HEDEF VE DRİL AYARLARI");
 
             GameObject summaryBox = CreateRoundedPanel("TargetSummaryBox", page.transform, roundedSprite, HeaderBgColor);
             LayoutElement sumLe = summaryBox.AddComponent<LayoutElement>();
-            sumLe.minHeight = 34f;
-            sumLe.preferredHeight = 34f;
+            sumLe.minHeight = 32f;
+            sumLe.preferredHeight = 32f;
             Text sumTxt = CreateText("TargetSummaryText", summaryBox.transform, font, "Aktif: Klasik Poligon (25 / 100 / 300 / 500 m)", 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
             StretchFull(sumTxt.GetComponent<RectTransform>());
 
             // 1. Target Count (0..6)
             CreateSectionLabel("TargetCountHeader", page.transform, font, "HEDEF SAYISI (0 - 6)");
-            CreateChipRow("TargetCountRow", page.transform, roundedSprite, font, 34f,
+            CreateChipRow("TargetCountRow", page.transform, roundedSprite, font, 32f,
                 new[] { ("CountBtn_0", "0"), ("CountBtn_1", "1"), ("CountBtn_2", "2"), ("CountBtn_3", "3"), ("CountBtn_4", "4"), ("CountBtn_5", "5"), ("CountBtn_6", "6") });
 
             CreateDivider("TargetDiv1", page.transform);
 
             // 2. Target Distance (20, 25, 50, 100, 200m + -5/+5m fine adjust)
             CreateSectionLabel("TargetDistHeader", page.transform, font, "HEDEF MESAFESİ");
-            CreateChipRow("TargetDistPresetRow", page.transform, roundedSprite, font, 34f,
+            CreateChipRow("TargetDistPresetRow", page.transform, roundedSprite, font, 32f,
                 new[] { ("DistBtn_20", "20m"), ("DistBtn_25", "25m"), ("DistBtn_50", "50m"), ("DistBtn_100", "100m"), ("DistBtn_200", "200m") });
             CreateStepAdjustRow("TargetDistStepRow", page.transform, roundedSprite, font, "DistMinusButton", "DistValueText", "DistPlusButton", "-5 m", "25 m", "+5 m");
 
             CreateDivider("TargetDiv2", page.transform);
 
-            // 3. Target Spacing (1..30m, default 5m)
+            // 3. Target Spacing / Soldier Lateral Evasion Corridor (1..30m, default 5m)
             CreateSectionLabel("TargetSpacingHeader", page.transform, font, "HEDEF ARALIĞI (YAN YANA: 1 - 30 m)");
-            CreateChipRow("TargetSpacingPresetRow", page.transform, roundedSprite, font, 34f,
+            CreateChipRow("TargetSpacingPresetRow", page.transform, roundedSprite, font, 32f,
                 new[] { ("SpacingBtn_1", "1m"), ("SpacingBtn_3", "3m"), ("SpacingBtn_5", "5m"), ("SpacingBtn_10", "10m"), ("SpacingBtn_20", "20m"), ("SpacingBtn_30", "30m") });
             CreateStepAdjustRow("TargetSpacingStepRow", page.transform, roundedSprite, font, "SpacingMinusButton", "SpacingValueText", "SpacingPlusButton", "-1 m", "5 m aralık", "+1 m");
+
+            // 3b. Soldier-Only Movement Mode (Yan Koşu vs Hücum Modu) — toggled visible only when Asker is active
+            GameObject soldierModeSection = new GameObject("SoldierModeSection");
+            soldierModeSection.transform.SetParent(page.transform, false);
+            VerticalLayoutGroup smLayout = soldierModeSection.AddComponent<VerticalLayoutGroup>();
+            smLayout.spacing = 4f;
+            smLayout.childAlignment = TextAnchor.UpperCenter;
+            smLayout.childControlWidth = true;
+            smLayout.childControlHeight = true;
+            smLayout.childForceExpandWidth = true;
+            smLayout.childForceExpandHeight = false;
+
+            CreateDivider("SoldierModeDiv", soldierModeSection.transform);
+            CreateSectionLabel("SoldierModeHeader", soldierModeSection.transform, font, "ASKER HAREKET MODU");
+
+            GameObject modeRow = CreateRowContainer("SoldierModeRow", soldierModeSection.transform, 34f);
+            HorizontalLayoutGroup modeH = modeRow.AddComponent<HorizontalLayoutGroup>();
+            modeH.spacing = 8f;
+            modeH.childControlWidth = true;
+            modeH.childControlHeight = true;
+            modeH.childForceExpandWidth = true;
+            modeH.childForceExpandHeight = true;
+
+            Button lateralBtn = CreateRoundedButton("SoldierLateralButton", modeRow.transform, roundedSprite, AccentColor, Vector2.zero);
+            Text lateralLbl = CreateText("Label", lateralBtn.transform, font, "Yan Koşu (Şaşırtma)", 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(lateralLbl.GetComponent<RectTransform>());
+
+            Button assaultBtn = CreateRoundedButton("SoldierAssaultButton", modeRow.transform, roundedSprite, CardBgColor, Vector2.zero);
+            Text assaultLbl = CreateText("Label", assaultBtn.transform, font, "Hücum Modu (Üzerine)", 13, FontStyle.Bold, TextPrimaryColor, TextAnchor.MiddleCenter);
+            StretchFull(assaultLbl.GetComponent<RectTransform>());
+            soldierModeSection.SetActive(false);
 
             CreateDivider("TargetDiv3", page.transform);
 
             // 4. Utility Row: Classic Multi-Distance Range vs Clear Marks
-            GameObject utilRow = CreateRowContainer("TargetUtilityRow", page.transform, 36f);
+            GameObject utilRow = CreateRowContainer("TargetUtilityRow", page.transform, 34f);
             HorizontalLayoutGroup utilLayout = utilRow.AddComponent<HorizontalLayoutGroup>();
             utilLayout.spacing = 8f;
             utilLayout.childControlWidth = true;

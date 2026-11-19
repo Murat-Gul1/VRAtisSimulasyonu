@@ -11,11 +11,13 @@ namespace VRAtis.EditorTools
     public static class SteelGongSetupTool
     {
         private const string FbxPath = "Assets/Models/Targets/SteelGongTargetStand.fbx";
+        private const string SilhouetteFbxPath = "Assets/Models/Targets/SteelSilhouetteTargetStand.fbx";
         private const string TexDir = "Assets/Models/Targets/Textures";
         private const string MatDir = "Assets/Materials/Targets";
         private const string AudioDir = "Assets/Audio/Targets";
         private const string PrefabPath = "Assets/Prefabs/SteelGongTargetStand.prefab";
-        private const string AutoSetupVersionKey = "VRAtis_SteelGongs_V4_Done";
+        private const string SilhouettePrefabPath = "Assets/Prefabs/SteelSilhouetteTargetStand.prefab";
+        private const string AutoSetupVersionKey = "VRAtis_SteelGongs_V6_Done";
 
         private static readonly string[] LegacyTargetNames =
         {
@@ -127,6 +129,20 @@ namespace VRAtis.EditorTools
                 gongHitClips,
                 frameClankClips);
 
+            GameObject silhouettePrefabAsset = null;
+            GameObject silhouetteFbx = AssetDatabase.LoadAssetAtPath<GameObject>(SilhouetteFbxPath);
+            if (silhouetteFbx != null)
+            {
+                Material matSilhouetteFace = BuildSilhouetteFaceMaterial();
+                silhouettePrefabAsset = BuildOrUpdateSilhouettePrefab(
+                    silhouetteFbx,
+                    matSilhouetteFace,
+                    matGongEdge,
+                    matStandFrame,
+                    gongHitClips,
+                    frameClankClips);
+            }
+
             RemoveObjectsByName(LegacyTargetNames);
             RemoveObjectsByName(GongStandNames);
 
@@ -141,17 +157,22 @@ namespace VRAtis.EditorTools
             PlaceGongStation(prefabAsset, "SteelGong_300m", new Vector3(-2.50f,       0f, 300f), 1.50f, 16f, shooterPos);
             PlaceGongStation(prefabAsset, "SteelGong_500m", new Vector3(4.20f,        0f, 500f), 2.00f, 18f, shooterPos);
 
-            EnsureTargetRangeManager(prefabAsset, playerRifle != null ? playerRifle.transform : null);
+            EnsureTargetRangeManager(prefabAsset, silhouettePrefabAsset, playerRifle != null ? playerRifle.transform : null);
 
             AssetDatabase.SaveAssets();
             EditorSceneManager.MarkAllScenesDirty();
             EditorSceneManager.SaveOpenScenes();
             EditorPrefs.SetBool(AutoSetupVersionKey, true);
 
-            Debug.Log("[SteelGongSetupTool] Eski kutu hedefler kaldırıldı; 25m, 100m, 300m ve 500m sallanan AR500 zincirli metal gong hedefleri ve TargetRangeManager kuruldu.");
+            Debug.Log("[SteelGongSetupTool] AR500 zincirli Gong + yere çakılı Metal İnsan Silueti prefabları ve TargetRangeManager kuruldu.");
         }
 
         public static TargetRangeManager EnsureTargetRangeManager(GameObject gongPrefab, Transform shooterOrigin)
+        {
+            return EnsureTargetRangeManager(gongPrefab, null, shooterOrigin);
+        }
+
+        public static TargetRangeManager EnsureTargetRangeManager(GameObject gongPrefab, GameObject silhouettePrefab, Transform shooterOrigin)
         {
             TargetRangeManager mgr = Object.FindAnyObjectByType<TargetRangeManager>();
             if (mgr == null)
@@ -162,6 +183,8 @@ namespace VRAtis.EditorTools
 
             if (gongPrefab == null)
                 gongPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);
+            if (silhouettePrefab == null)
+                silhouettePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(SilhouettePrefabPath);
 
             if (shooterOrigin == null)
             {
@@ -172,6 +195,11 @@ namespace VRAtis.EditorTools
             SerializedObject so = new SerializedObject(mgr);
             if (gongPrefab != null)
                 so.FindProperty("steelGongPrefab").objectReferenceValue = gongPrefab;
+            if (silhouettePrefab != null)
+                so.FindProperty("metalSilhouettePrefab").objectReferenceValue = silhouettePrefab;
+            GameObject soldierPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(EnemySoldierSetupTool.PrefabPath);
+            if (soldierPrefab != null && so.FindProperty("enemySoldierPrefab") != null)
+                so.FindProperty("enemySoldierPrefab").objectReferenceValue = soldierPrefab;
             if (shooterOrigin != null)
                 so.FindProperty("shooterOriginTransform").objectReferenceValue = shooterOrigin;
             so.ApplyModifiedPropertiesWithoutUndo();
@@ -313,12 +341,184 @@ namespace VRAtis.EditorTools
             }
         }
 
+        private static GameObject BuildOrUpdateSilhouettePrefab(
+            GameObject fbxPrefab,
+            Material matSilhouetteFace,
+            Material matEdgeSteel,
+            Material matStandFrame,
+            AudioClip[] gongHitClips,
+            AudioClip[] frameClankClips)
+        {
+            GameObject tempRoot = (GameObject)PrefabUtility.InstantiatePrefab(fbxPrefab);
+            tempRoot.name = "__SteelSilhouettePrefabTemp";
+            tempRoot.transform.position = Vector3.zero;
+            tempRoot.transform.rotation = Quaternion.identity;
+            tempRoot.transform.localScale = Vector3.one;
+
+            PrefabUtility.UnpackPrefabInstance(tempRoot, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
+
+            try
+            {
+                Transform standTr = FindChildByName(tempRoot.transform, "Stand_Frame");
+                Transform pivotTr = FindChildByName(tempRoot.transform, "Gong_Pivot");
+                Transform plateTr = FindChildByName(tempRoot.transform, "AR500_GongPlate");
+                int paintedSubmeshIdx = 0;
+
+                if (plateTr != null)
+                {
+                    MeshRenderer plateMr = plateTr.GetComponent<MeshRenderer>();
+                    if (plateMr != null && plateMr.sharedMaterials != null)
+                    {
+                        Material[] mats = plateMr.sharedMaterials;
+                        if (mats.Length >= 2)
+                        {
+                            bool anyNamedMatch = false;
+                            for (int i = 0; i < mats.Length; i++)
+                            {
+                                string mn = mats[i] != null ? mats[i].name : "";
+                                if (mn.Contains("PaintedFace"))
+                                {
+                                    mats[i] = matSilhouetteFace;
+                                    paintedSubmeshIdx = i;
+                                    anyNamedMatch = true;
+                                }
+                                else if (mn.Contains("EdgeSteel") || mn.Contains("Steel"))
+                                {
+                                    mats[i] = matEdgeSteel;
+                                    anyNamedMatch = true;
+                                }
+                            }
+                            if (!anyNamedMatch)
+                            {
+                                mats[0] = matSilhouetteFace;
+                                mats[1] = matEdgeSteel;
+                                paintedSubmeshIdx = 0;
+                            }
+                            plateMr.sharedMaterials = mats;
+                        }
+                        else
+                        {
+                            plateMr.sharedMaterial = matSilhouetteFace;
+                        }
+                    }
+                }
+
+                // Guarantee upright (+Y) standing orientation from Blender Z-up FBX, grounded at Y = 0, facing -Z toward shooter
+                EnsureSilhouetteUprightAndGrounded(standTr, pivotTr, plateTr);
+
+                if (plateTr != null && DetectPaintedFacePlusZ(plateTr, paintedSubmeshIdx))
+                {
+                    if (standTr != null) standTr.RotateAround(Vector3.zero, Vector3.up, 180f);
+                    if (pivotTr != null) pivotTr.RotateAround(Vector3.zero, Vector3.up, 180f);
+                }
+
+                if (standTr != null)
+                {
+                    AssignRendererMaterial(standTr.gameObject, matStandFrame);
+                    standTr.gameObject.tag = "SteelArmor";
+                    MeshCollider standCol = GetOrAddComponent<MeshCollider>(standTr.gameObject);
+                    standCol.sharedMesh = standTr.GetComponent<MeshFilter>() != null ? standTr.GetComponent<MeshFilter>().sharedMesh : null;
+                    standCol.convex = false;
+                }
+
+                if (plateTr != null)
+                {
+                    plateTr.gameObject.tag = "SteelArmor";
+                    // Non-convex MeshCollider preserves exact head/neck/shoulder silhouette hitbox for raycast ballistics
+                    MeshCollider plateCol = GetOrAddComponent<MeshCollider>(plateTr.gameObject);
+                    plateCol.sharedMesh = plateTr.GetComponent<MeshFilter>() != null ? plateTr.GetComponent<MeshFilter>().sharedMesh : null;
+                    plateCol.convex = false;
+                }
+
+                SteelGongTarget target = GetOrAddComponent<SteelGongTarget>(tempRoot);
+                SerializedObject targetSo = new SerializedObject(target);
+                targetSo.FindProperty("gongPivot").objectReferenceValue = pivotTr;
+                targetSo.FindProperty("gongPlateTransform").objectReferenceValue = plateTr;
+                targetSo.FindProperty("standFrameTransform").objectReferenceValue = standTr;
+                float armLen = (pivotTr != null && plateTr != null)
+                    ? Mathf.Max(0.28f, Vector3.Distance(pivotTr.position, plateTr.position))
+                    : 0.39f;
+                targetSo.FindProperty("pendulumLengthMeters").floatValue = armLen;
+                targetSo.FindProperty("plateMassKg").floatValue = 14f;
+                targetSo.FindProperty("angularDamping").floatValue = 2.4f;
+                targetSo.FindProperty("maxSwingAngleDeg").floatValue = 38f;
+                targetSo.FindProperty("lateralTwistStiffness").floatValue = 46f;
+                targetSo.FindProperty("lateralTwistDamping").floatValue = 5.2f;
+                SetClipArray(targetSo.FindProperty("gongHitClips"), gongHitClips);
+                SetClipArray(targetSo.FindProperty("frameClankClips"), frameClankClips);
+                targetSo.ApplyModifiedPropertiesWithoutUndo();
+
+                if (plateTr != null)
+                {
+                    SteelGongHitReceiver plateRecv = GetOrAddComponent<SteelGongHitReceiver>(plateTr.gameObject);
+                    plateRecv.Configure(target, standFrame: false);
+                }
+                if (standTr != null)
+                {
+                    SteelGongHitReceiver frameRecv = GetOrAddComponent<SteelGongHitReceiver>(standTr.gameObject);
+                    frameRecv.Configure(target, standFrame: true);
+                }
+
+                tempRoot.name = "SteelSilhouetteTargetStand";
+                return PrefabUtility.SaveAsPrefabAsset(tempRoot, SilhouettePrefabPath);
+            }
+            finally
+            {
+                if (tempRoot != null)
+                    Object.DestroyImmediate(tempRoot);
+            }
+        }
+
         private static T GetOrAddComponent<T>(GameObject go) where T : Component
         {
             T existing = go.GetComponent<T>();
             if (existing != null)
                 return existing;
             return go.AddComponent<T>();
+        }
+
+        private static void EnsureSilhouetteUprightAndGrounded(Transform standTr, Transform pivotTr, Transform plateTr)
+        {
+            if (standTr == null)
+                return;
+
+            MeshRenderer standMr = standTr.GetComponent<MeshRenderer>();
+            if (standMr == null)
+                return;
+
+            // 1. If Blender Z-up FBX imported lying along +Z (size.z > size.y), stand both frame & pivot upright along +Y
+            Bounds sb = standMr.bounds;
+            if (sb.size.y < sb.size.z * 0.90f)
+            {
+                standTr.RotateAround(Vector3.zero, Vector3.right, -90f);
+                if (pivotTr != null)
+                    pivotTr.RotateAround(Vector3.zero, Vector3.right, -90f);
+                sb = standMr.bounds;
+            }
+
+            // 2. If plate ended up hanging below pivot instead of standing above the ground stake, flip upright
+            if (pivotTr != null && plateTr != null && plateTr.position.y < pivotTr.position.y)
+            {
+                standTr.RotateAround(Vector3.zero, Vector3.right, 180f);
+                pivotTr.RotateAround(Vector3.zero, Vector3.right, 180f);
+                sb = standMr.bounds;
+            }
+
+            // 3. Ground the anchor plate cleanly at Y = 0 and shift pivot by the exact same offset
+            float minY = sb.min.y;
+            if (Mathf.Abs(minY) > 0.001f)
+            {
+                Vector3 shiftY = new Vector3(0f, -minY, 0f);
+                standTr.position += shiftY;
+                if (pivotTr != null)
+                    pivotTr.position += shiftY;
+            }
+
+            Bounds finalStand = standMr.bounds;
+            Bounds finalPlate = plateTr != null && plateTr.GetComponent<MeshRenderer>() != null
+                ? plateTr.GetComponent<MeshRenderer>().bounds
+                : new Bounds();
+            Debug.Log($"[SteelGongSetupTool] Metal İnsan Silueti hizalandı -> Stand boyut={finalStand.size:F2} tabanY={finalStand.min.y:F3} | PivotY={(pivotTr != null ? pivotTr.position.y : 0f):F2} | Siluet={finalPlate.min.y:F2}..{finalPlate.max.y:F2}");
         }
 
         private static void EnsureStandUprightAndGrounded(Transform standTr, Transform pivotTr, Transform chainsTr, Transform plateTr)
@@ -536,6 +736,35 @@ namespace VRAtis.EditorTools
             }
 
             Texture2D faceTex = LoadTexture($"{TexDir}/GongFace_Painted_BaseColor.png", isNormal: false, maxSize: 1024);
+            if (faceTex != null)
+                mat.SetTexture("_BaseMap", faceTex);
+
+            Texture2D steelNorm = LoadTexture($"{TexDir}/metal_plate_02_nor_gl.png", isNormal: true, maxSize: 1024);
+            if (steelNorm != null)
+            {
+                mat.SetTexture("_BumpMap", steelNorm);
+                mat.SetFloat("_BumpScale", 0.35f);
+                mat.EnableKeyword("_NORMALMAP");
+            }
+
+            mat.SetColor("_BaseColor", Color.white);
+            mat.SetFloat("_Metallic", 0.14f);
+            mat.SetFloat("_Smoothness", 0.45f);
+            EditorUtility.SetDirty(mat);
+            return mat;
+        }
+
+        private static Material BuildSilhouetteFaceMaterial()
+        {
+            string matPath = $"{MatDir}/SilhouettePlate_PaintedFace.mat";
+            Material mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+            if (mat == null)
+            {
+                mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                AssetDatabase.CreateAsset(mat, matPath);
+            }
+
+            Texture2D faceTex = LoadTexture($"{TexDir}/SilhouetteFace_Painted_BaseColor.png", isNormal: false, maxSize: 1024);
             if (faceTex != null)
                 mat.SetTexture("_BaseMap", faceTex);
 
