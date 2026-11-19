@@ -481,6 +481,76 @@ Transform:
   - {fileID: 3417562142366996412}
   m_Father: {fileID: 2478195180854395121}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1041127966434196718
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 8567738772280161038}
+  - component: {fileID: 1932404020173088527}
+  - component: {fileID: 1376274672577397291}
+  m_Layer: 0
+  m_Name: Hitbox_RightArm
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &8567738772280161038
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1041127966434196718}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 6289843161386466966}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!136 &1932404020173088527
+CapsuleCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1041127966434196718}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 2
+  m_Radius: 1.6249369
+  m_Height: 7.6467624
+  m_Direction: 1
+  m_Center: {x: 0, y: 3.4410431, z: 0}
+--- !u!114 &1376274672577397291
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1041127966434196718}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 81f982f5d10a3a446adf750b021e2c19, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Targets.EnemySoldierHitbox
+  soldierTarget: {fileID: 735833937037565240}
+  hitZone: 2
 --- !u!1 &1137508018556201584
 GameObject:
   m_ObjectHideFlags: 0
@@ -868,19 +938,25 @@ MonoBehaviour:
   assaultBreachResetSeconds: 1.25
   maxHealth: 100
   headDamage: 100
-  torsoDamage: 55
-  limbDamage: 35
-  respawnDelaySeconds: 4.2
+  torsoDamage: 100
+  limbDamage: 55
+  deathLingerSeconds: 4
+  despawnSinkSeconds: 0.85
+  removeAfterDeath: 1
   bodyHitClips:
   - {fileID: 8300000, guid: af58178c6afb10c4ebb9eb63bfd71233, type: 3}
   headHitClips:
   - {fileID: 8300000, guid: f4df8ef796f8ef8478487b9da59d83bc, type: 3}
+  deathFallClips:
+  - {fileID: 8300000, guid: b28d57e0d22b6f5438b4f8251592d4b3, type: 3}
+  runningFootstepLoopClip: {fileID: 8300000, guid: 93f7da6af6c85604e96a4cc0633965b2, type: 3}
+  runAudioVolume: 0.9
+  runAudioMinDistance: 4
+  runAudioMaxDistance: 75
   useSpeedOfSoundDelay: 1
   hitVolume: 0.92
   minAudibleDistance: 40
   maxAudibleDistance: 1000
-  hitBurstDurationSec: 0.11
-  hitBurstSizeMeters: 0.18
 --- !u!1 &2204424240478759182
 GameObject:
   m_ObjectHideFlags: 0
@@ -1364,6 +1440,7 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 2012917603606557824}
+  - {fileID: 8567738772280161038}
   m_Father: {fileID: 4810842272502862113}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &3349817920833036966
@@ -2094,6 +2171,7 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 8533247308977441042}
+  - {fileID: 1449237189084609853}
   m_Father: {fileID: 5495262785794719117}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &5029699910597624304
@@ -3030,6 +3108,76 @@ Transform:
   - {fileID: 7266003635552956812}
   m_Father: {fileID: 3210105608980089454}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &7619324416241476246
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1449237189084609853}
+  - component: {fileID: 660674133624401982}
+  - component: {fileID: 3988387768885927880}
+  m_Layer: 0
+  m_Name: Hitbox_LeftArm
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1449237189084609853
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7619324416241476246}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 2656763457882174090}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!136 &660674133624401982
+CapsuleCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7619324416241476246}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 2
+  m_Radius: 1.6249372
+  m_Height: 7.646763
+  m_Direction: 1
+  m_Center: {x: 0, y: 3.4410434, z: 0}
+--- !u!114 &3988387768885927880
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7619324416241476246}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 81f982f5d10a3a446adf750b021e2c19, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Targets.EnemySoldierHitbox
+  soldierTarget: {fileID: 735833937037565240}
+  hitZone: 2
 --- !u!1 &7691186664148868465
 GameObject:
   m_ObjectHideFlags: 0

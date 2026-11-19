@@ -15,7 +15,7 @@ namespace VRAtis.EditorTools
         private const string MatDir = "Assets/Materials/Enemies";
         private const string AudioDir = "Assets/Audio/Targets";
         public const string PrefabPath = "Assets/Prefabs/EnemySoldier_KSK.prefab";
-        private const string AutoSetupVersionKey = "VRAtis_EnemySoldier_V4_Done";
+        private const string AutoSetupVersionKey = "VRAtis_EnemySoldier_V6_Done";
 
         static EnemySoldierSetupTool()
         {
@@ -105,6 +105,8 @@ namespace VRAtis.EditorTools
 
             AudioClip bodyHit01 = LoadConfiguredAudioClip($"{AudioDir}/EnemyHit_Body_01.wav");
             AudioClip headHit01 = LoadConfiguredAudioClip($"{AudioDir}/EnemyHit_Helmet_01.wav");
+            AudioClip deathFall01 = LoadConfiguredAudioClip($"{AudioDir}/EnemyDeath_Fall_01.wav");
+            AudioClip runFootstep01 = LoadConfiguredAudioClip($"{AudioDir}/EnemySoldier_Run_01.wav");
 
             GameObject tempRoot = new GameObject("EnemySoldier_KSK");
             try
@@ -175,6 +177,8 @@ namespace VRAtis.EditorTools
                 so.FindProperty("deathClip").objectReferenceValue = deathClip;
                 SetClipArray(so.FindProperty("bodyHitClips"), bodyHit01);
                 SetClipArray(so.FindProperty("headHitClips"), headHit01);
+                SetClipArray(so.FindProperty("deathFallClips"), deathFall01);
+                so.FindProperty("runningFootstepLoopClip").objectReferenceValue = runFootstep01;
                 so.ApplyModifiedPropertiesWithoutUndo();
 
                 GameObject savedPrefab = PrefabUtility.SaveAsPrefabAsset(tempRoot, PrefabPath);
@@ -346,6 +350,8 @@ namespace VRAtis.EditorTools
             Transform rUpLegBone = FindBoneContaining(modelRoot, "RightUpLeg_060", "RightUpLeg");
             Transform lLegBone   = FindBoneContaining(modelRoot, "LeftLeg_057", "LeftLeg");
             Transform rLegBone   = FindBoneContaining(modelRoot, "RightLeg_061", "RightLeg");
+            Transform lArmBone   = FindBoneContaining(modelRoot, "LeftArm_09", "LeftArm");
+            Transform rArmBone   = FindBoneContaining(modelRoot, "RightArm_033", "RightArm");
 
             bool anyAttached = false;
             if (headBone != null)
@@ -373,6 +379,10 @@ namespace VRAtis.EditorTools
                 AddCapsuleHitbox(lLegBone, "Hitbox_LeftShin", soldier, SoldierHitZone.Limb, worldRadius: 0.095f, worldHeight: 0.44f, localAlongBoneY: 0.19f);
             if (rLegBone != null)
                 AddCapsuleHitbox(rLegBone, "Hitbox_RightShin", soldier, SoldierHitZone.Limb, worldRadius: 0.095f, worldHeight: 0.44f, localAlongBoneY: 0.19f);
+            if (lArmBone != null)
+                AddCapsuleHitbox(lArmBone, "Hitbox_LeftArm", soldier, SoldierHitZone.Limb, worldRadius: 0.085f, worldHeight: 0.40f, localAlongBoneY: 0.18f);
+            if (rArmBone != null)
+                AddCapsuleHitbox(rArmBone, "Hitbox_RightArm", soldier, SoldierHitZone.Limb, worldRadius: 0.085f, worldHeight: 0.40f, localAlongBoneY: 0.18f);
 
             // Fallback root torso/head colliders if bone naming ever differed
             if (!anyAttached)

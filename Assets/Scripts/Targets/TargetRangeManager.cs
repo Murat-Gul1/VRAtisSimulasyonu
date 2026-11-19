@@ -39,6 +39,7 @@ namespace VRAtis.Targets
         [SerializeField] private float spacingMeters = 5f;
         [SerializeField] private bool isCustomDrillActive = false;
         [SerializeField] private bool soldierAssaultMode = false;
+        [SerializeField] private float soldierWaveRespawnDelaySec = 2.5f;
 
         public event Action OnDrillConfigChanged;
 
@@ -61,6 +62,7 @@ namespace VRAtis.Targets
         private Vector3 _originWorldPos = new Vector3(2.01f, 0f, -3.783f);
         private Vector3 _rangeForward = Vector3.forward;
         private Vector3 _rangeRight = Vector3.right;
+        private float _soldierWaveRespawnTimer = -1f;
 
         private void Awake()
         {
@@ -83,6 +85,60 @@ namespace VRAtis.Targets
                 ApplyCustomDrillLayout();
             else
                 ApplyClassicRangeLayout();
+        }
+
+        private void Update()
+        {
+            // After all eliminated soldiers in the current wave have vanished, smoothly deploy
+            // a fresh wave from the starting line after soldierWaveRespawnDelaySec.
+            if (activeTargetKind != TargetKind.MovingEnemySoldier || enemySoldierPrefab == null)
+            {
+                _soldierWaveRespawnTimer = -1f;
+                return;
+            }
+
+            if (isCustomDrillActive && targetCount <= 0)
+            {
+                _soldierWaveRespawnTimer = -1f;
+                return;
+            }
+
+            List<EnemySoldierTarget> activeList = isCustomDrillActive ? _soldierDrillPool : _classicSoldierTargets;
+            int expected = isCustomDrillActive ? Mathf.Min(targetCount, activeList.Count) : activeList.Count;
+            if (expected <= 0)
+                return;
+
+            int stillPresent = 0;
+            for (int i = 0; i < expected; i++)
+            {
+                if (activeList[i] != null && activeList[i].gameObject.activeSelf)
+                    stillPresent++;
+            }
+
+            if (stillPresent == 0)
+            {
+                if (_soldierWaveRespawnTimer < 0f)
+                {
+                    _soldierWaveRespawnTimer = Mathf.Max(0.5f, soldierWaveRespawnDelaySec);
+                }
+                else
+                {
+                    _soldierWaveRespawnTimer -= Time.deltaTime;
+                    if (_soldierWaveRespawnTimer <= 0f)
+                    {
+                        _soldierWaveRespawnTimer = -1f;
+                        Debug.Log("[Poligon] Tüm düşman askerler etkisiz hale getirildi ve silindi — yeni dalga geliyor!");
+                        if (isCustomDrillActive)
+                            ApplyCustomDrillLayout();
+                        else
+                            ApplyClassicRangeLayout();
+                    }
+                }
+            }
+            else
+            {
+                _soldierWaveRespawnTimer = -1f;
+            }
         }
 
         private void ResolveShooterLane()
@@ -199,18 +255,20 @@ namespace VRAtis.Targets
 
         public void ClearAllImpactMarksAndSwings()
         {
+            _soldierWaveRespawnTimer = -1f;
+
+            if (activeTargetKind == TargetKind.MovingEnemySoldier)
+            {
+                // Re-deploy full fresh squad (including any previously eliminated & removed soldiers)
+                if (isCustomDrillActive)
+                    ApplyCustomDrillLayout();
+                else
+                    ApplyClassicRangeLayout();
+                return;
+            }
+
             if (isCustomDrillActive)
             {
-                if (activeTargetKind == TargetKind.MovingEnemySoldier)
-                {
-                    for (int i = 0; i < targetCount && i < _soldierDrillPool.Count; i++)
-                    {
-                        if (_soldierDrillPool[i] != null && _soldierDrillPool[i].gameObject.activeSelf)
-                            _soldierDrillPool[i].ResetSoldierState();
-                    }
-                    return;
-                }
-
                 List<SteelGongTarget> activePool = GetPoolForKind(activeTargetKind);
                 for (int i = 0; i < targetCount && i < activePool.Count; i++)
                 {
@@ -220,16 +278,6 @@ namespace VRAtis.Targets
             }
             else
             {
-                if (activeTargetKind == TargetKind.MovingEnemySoldier && _classicSoldierTargets.Count > 0)
-                {
-                    for (int i = 0; i < _classicSoldierTargets.Count; i++)
-                    {
-                        if (_classicSoldierTargets[i] != null && _classicSoldierTargets[i].gameObject.activeSelf)
-                            _classicSoldierTargets[i].ResetSoldierState();
-                    }
-                    return;
-                }
-
                 List<SteelGongTarget> classicList = activeTargetKind == TargetKind.MetalHumanSilhouette && _classicSilhouetteTargets.Count > 0
                     ? _classicSilhouetteTargets
                     : _classicGongTargets;
