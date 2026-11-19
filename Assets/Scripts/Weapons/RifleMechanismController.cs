@@ -21,6 +21,7 @@ namespace VRAtis.Weapons
 
         [Header("Hareketli Silah Parçaları")]
         [SerializeField] private Transform boltCarrierTransform;
+        [SerializeField] private Transform chargingHandleTransform;
         [SerializeField] private Transform dustCoverTransform;
         [SerializeField] private Transform ejectionPoint;
         [SerializeField] private Transform magazineTransform;
@@ -34,6 +35,17 @@ namespace VRAtis.Weapons
         [Tooltip("Sürgünün ileriye dönüş süresi (sn).")]
         [SerializeField] private float boltForwardDurationSec = 0.055f;
         [SerializeField] private Vector3 boltSlideLocalAxis = new Vector3(0f, 0f, -1f);
+
+        [Header("Kurma Kolu (Charging Handle) Hareketi")]
+        [Tooltip("Kurma kolunun geriye çekilme mesafesi (metre).")]
+        [SerializeField] private float chargingHandleTravelMeters = 0.072f;
+        [Tooltip("Kurma kolunun geriye çekilme süresi (sn) - sesle senkronize.")]
+        [SerializeField] private float chargingPullBackDurationSec = 0.175f;
+        [Tooltip("En geride bekleme süresi (sn) - sesle senkronize.")]
+        [SerializeField] private float chargingRearHoldDurationSec = 0.300f;
+        [Tooltip("Yay kuvvetiyle ileri kapanma süresi (sn) - sesle senkronize.")]
+        [SerializeField] private float chargingSnapForwardDurationSec = 0.095f;
+        [SerializeField] private Vector3 chargingHandleSlideLocalAxis = new Vector3(0f, 0f, -1f);
 
         [Header("Toz Kapağı (İlk Atışta Açılır ve Açık Kalır)")]
         [SerializeField] private float dustCoverOpenAngleDeg = 115f;
@@ -63,6 +75,18 @@ namespace VRAtis.Weapons
         private bool _boltReleasingFromLock;
         private float _boltTimer;
 
+        private Vector3 _chargingHandleHomeLocalPos;
+        private bool _chargingCycling;
+        private bool _chargingStartedFromBoltLock;
+        private float _chargingTimer;
+
+        public float ChargingCycleTotalDuration =>
+            Mathf.Max(0.01f, chargingPullBackDurationSec)
+            + Mathf.Max(0f, chargingRearHoldDurationSec)
+            + Mathf.Max(0.01f, chargingSnapForwardDurationSec);
+
+        public bool IsChargingHandleCycling => _chargingCycling;
+
         private Quaternion _dustCoverClosedLocalRot;
         private bool _dustCoverOpened;
         private bool _dustCoverAnimating;
@@ -88,6 +112,9 @@ namespace VRAtis.Weapons
             if (boltCarrierTransform != null)
                 _boltHomeLocalPos = boltCarrierTransform.localPosition;
 
+            if (chargingHandleTransform != null)
+                _chargingHandleHomeLocalPos = chargingHandleTransform.localPosition;
+
             if (dustCoverTransform != null)
                 _dustCoverClosedLocalRot = dustCoverTransform.localRotation;
 
@@ -104,6 +131,7 @@ namespace VRAtis.Weapons
         private void Update()
         {
             float dt = Time.deltaTime;
+            UpdateChargingHandle(dt);
             UpdateBoltCycle(dt);
             UpdateDustCoverOpen(dt);
             UpdateMagazineAnim(dt);
@@ -155,6 +183,31 @@ namespace VRAtis.Weapons
             _boltTimer = 0f;
         }
 
+        /// <summary>
+        /// Pulls the AR-15 charging handle rearward and lets the buffer spring slam both
+        /// the charging handle and bolt carrier forward in sync with the rack audio clip.
+        /// </summary>
+        public void CycleChargingHandle()
+        {
+            if (chargingHandleTransform == null && boltCarrierTransform == null)
+                return;
+
+            _chargingStartedFromBoltLock = _boltLockedOpen;
+            _boltLockedOpen = false;
+            _boltCycling = false;
+            _boltReleasingFromLock = false;
+            _chargingCycling = true;
+            _chargingTimer = 0f;
+
+            // Pulling the charging handle also flips the ejection port dust cover open on a real AR-15
+            if (!_dustCoverOpened && dustCoverTransform != null)
+            {
+                _dustCoverOpened = true;
+                _dustCoverAnimating = true;
+                _dustCoverTimer = 0f;
+            }
+        }
+
         public void EjectMagazine(bool dropPhysicalMag = true)
         {
             if (magazineTransform == null)
@@ -198,6 +251,15 @@ namespace VRAtis.Weapons
                     magSlideLocalAxis = magazineTransform.parent.InverseTransformDirection(-transform.up).normalized;
                 }
             }
+
+            if (chargingHandleTransform == null)
+            {
+                chargingHandleTransform = FindChildByNames(transform, "reciver1_low.003_3_0", "reciver1_low.003", "AR15_ChargingHandle");
+                if (chargingHandleTransform != null && chargingHandleTransform.parent != null)
+                {
+                    chargingHandleSlideLocalAxis = chargingHandleTransform.parent.InverseTransformDirection(-transform.forward).normalized;
+                }
+            }
         }
 
         private static Transform FindChildByNames(Transform root, params string[] names)
@@ -215,9 +277,63 @@ namespace VRAtis.Weapons
             return null;
         }
 
+        private void UpdateChargingHandle(float dt)
+        {
+            if (!_chargingCycling)
+                return;
+
+            _chargingTimer += dt;
+            float pullDur = Mathf.Max(0.01f, chargingPullBackDurationSec);
+            float holdDur = Mathf.Max(0f, chargingRearHoldDurationSec);
+            float fwdDur = Mathf.Max(0.01f, chargingSnapForwardDurationSec);
+
+            Vector3 chAxis = chargingHandleSlideLocalAxis.sqrMagnitude > 1e-4f
+                ? chargingHandleSlideLocalAxis.normalized
+                : Vector3.back;
+            Vector3 boltAxis = boltSlideLocalAxis.sqrMagnitude > 1e-4f
+                ? boltSlideLocalAxis.normalized
+                : Vector3.back;
+
+            float handleRatio;
+            float boltRatio;
+
+            if (_chargingTimer <= pullDur)
+            {
+                // Smooth ergonomic rearward pull
+                float t = _chargingTimer / pullDur;
+                handleRatio = t * t * (3f - 2f * t);
+                boltRatio = _chargingStartedFromBoltLock ? 1f : handleRatio;
+            }
+            else if (_chargingTimer <= pullDur + holdDur)
+            {
+                handleRatio = 1f;
+                boltRatio = 1f;
+            }
+            else if (_chargingTimer < pullDur + holdDur + fwdDur)
+            {
+                // Fast spring-driven forward slam (peaks right at end of fwdDur to match metallic slam)
+                float fwdT = (_chargingTimer - pullDur - holdDur) / fwdDur;
+                float remaining = 1f - (fwdT * fwdT);
+                handleRatio = remaining;
+                boltRatio = remaining;
+            }
+            else
+            {
+                handleRatio = 0f;
+                boltRatio = 0f;
+                _chargingCycling = false;
+            }
+
+            if (chargingHandleTransform != null)
+                chargingHandleTransform.localPosition = _chargingHandleHomeLocalPos + chAxis * (chargingHandleTravelMeters * handleRatio);
+
+            if (boltCarrierTransform != null)
+                boltCarrierTransform.localPosition = _boltHomeLocalPos + boltAxis * (boltTravelMeters * boltRatio);
+        }
+
         private void UpdateBoltCycle(float dt)
         {
-            if (boltCarrierTransform == null)
+            if (boltCarrierTransform == null || _chargingCycling)
                 return;
 
             if (_boltReleasingFromLock)

@@ -1022,7 +1022,14 @@ namespace VRAtis.UI
             if (!tracker.IsCameraRunning)
                 return "Durum: Kamera kapalı / Başlatılıyor";
             if (tracker.IsActivelyTrackingPosition)
-                return $"Durum: KİLİTLENDİ (A:✓ B:✓)\nMesafe: {tracker.CurrentOpticalDistanceMeters * 100f:F0} cm ({tracker.LastPixelSeparation:F0}px)\nKam: {tracker.ProcessedWidth}x{tracker.ProcessedHeight} {tracker.CameraUpdateHz:F0}Hz Açı:{tracker.CameraRotationAngle}°";
+            {
+                string yawLockTag = !tracker.IsOpticalYawFusionEnabled
+                    ? "Kapalı"
+                    : (tracker.IsOpticalYawFusionActive
+                        ? $"KİLİTLİ ({tracker.LastOpticalYawErrorDeg:+0.0;-0.0;0.0}°)"
+                        : "Beklemede");
+                return $"Durum: KİLİTLENDİ (A:✓ B:✓) | Yaw: {yawLockTag}\nMesafe: {tracker.CurrentOpticalDistanceMeters * 100f:F0} cm ({tracker.LastPixelSeparation:F0}px)\nKam: {tracker.ProcessedWidth}x{tracker.ProcessedHeight} {tracker.CameraUpdateHz:F0}Hz Açı:{tracker.CameraRotationAngle}°";
+            }
 
             string markA = tracker.IsLedAFound ? "✓" : "✗";
             string markB = tracker.IsLedBFound ? "✓" : "✗";

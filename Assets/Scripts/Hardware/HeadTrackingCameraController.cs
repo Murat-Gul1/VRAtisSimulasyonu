@@ -95,6 +95,7 @@ namespace VRAtis.Hardware
 
         public bool IsUsingMobileSensor => _sensorReady;
         public bool IsRoll180Compensated => _isRoll180Compensated;
+        public float EstimatedHeadSpeedDegPerSec => _estimatedHeadSpeedDegPerSec;
         public Vector3 ReadyWorldPosition => _readyPosition;
         public Quaternion ReadyWorldRotation => _smoothedHeadRot;
 

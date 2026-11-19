@@ -88,6 +88,8 @@ namespace VRAtis.Hardware
         private Vector3 _estimatedAngularAxis = Vector3.up;
         private float _estimatedAngularSpeedDegPerSec;
 
+        public float EstimatedAngularSpeedDegPerSec => _estimatedAngularSpeedDegPerSec;
+
         private void Awake()
         {
             if (receiver == null)
@@ -272,6 +274,25 @@ namespace VRAtis.Hardware
 
             _yawCalibrationOffset = Quaternion.Slerp(_yawCalibrationOffset, targetYawOffset, t);
             _localPitchCalibrationOffset = Quaternion.Slerp(_localPitchCalibrationOffset, targetPitchOffset, t);
+            _hasAutoZeroed = true;
+        }
+
+        /// <summary>
+        /// Gently nudges the horizontal Yaw calibration offset around world +Y without disturbing
+        /// gravity-referenced Pitch/Roll or injecting fake velocity into Wi-Fi dead-reckoning.
+        /// Used by OpticalRifleTracker (Layer 2 2-LED Optical-IMU Yaw Lock) to cancel 6-DOF drift.
+        /// </summary>
+        public void ApplyOpticalYawCorrection(float deltaYawDeg)
+        {
+            if (receiver == null || !receiver.IsConnected)
+                return;
+            if (Mathf.Abs(deltaYawDeg) < 1e-5f)
+                return;
+
+            Quaternion yawStep = Quaternion.AngleAxis(deltaYawDeg, Vector3.up);
+            _yawCalibrationOffset = yawStep * _yawCalibrationOffset;
+            _lastCalibratedPacketRot = yawStep * _lastCalibratedPacketRot;
+            transform.rotation = yawStep * transform.rotation;
             _hasAutoZeroed = true;
         }
 

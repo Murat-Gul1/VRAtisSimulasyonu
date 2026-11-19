@@ -40,6 +40,12 @@ namespace VRAtis.Weapons
         [Range(0f, 1f)]
         [SerializeField] private float magSpatialBlend = 0.35f;
 
+        [Header("Kurma Kolu (Charging Handle) Çekme / Bırakma Sesi")]
+        [SerializeField] private AudioClip[] chargingHandleClips;
+        [Range(0f, 1f)]
+        [SerializeField] private float chargingHandleVolume = 0.80f;
+        [SerializeField] private Vector2 chargingPitchVariation = new Vector2(0.98f, 1.02f);
+
         [Header("Dağ Vadisi Yankısı")]
         [SerializeField] private bool enableMountainValleyReverb = false;
 
@@ -54,6 +60,7 @@ namespace VRAtis.Weapons
         private AudioSource _mechSource;
         private int _lastMagEjectIndex = -1;
         private int _lastMagInsertIndex = -1;
+        private int _lastChargingIndex = -1;
 
         private void Awake()
         {
@@ -127,6 +134,15 @@ namespace VRAtis.Weapons
         public void PlayMagInsert()
         {
             PlayMechanismClip(magInsertClips, ref _lastMagInsertIndex, magVolume, magPitchVariation);
+        }
+
+        /// <summary>
+        /// Call from RifleWeapon.onChargingHandleRacked UnityEvent to play the synchronized
+        /// AR-15 charging handle pull-back and forward bolt-slam mechanical audio.
+        /// </summary>
+        public void PlayChargingHandleRack()
+        {
+            PlayMechanismClip(chargingHandleClips, ref _lastChargingIndex, chargingHandleVolume, chargingPitchVariation);
         }
 
         private void PlayMechanismClip(AudioClip[] clips, ref int lastIndex, float volume, Vector2 pitchRange)

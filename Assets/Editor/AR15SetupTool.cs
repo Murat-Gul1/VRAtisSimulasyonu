@@ -21,7 +21,7 @@ namespace VRAtis.EditorTools
         private const string CasingPrefabPath = "Assets/Prefabs/BrassCasing556.prefab";
         private const string AudioFolderPath = "Assets/Audio/Weapons";
         private const string SetupInstanceName = "AR15_WithRedDot";
-        private const string AutoSetupVersionKey = "VRAtis_AR15_BakedV12_Done";
+        private const string AutoSetupVersionKey = "VRAtis_AR15_BakedV15_Done";
 
         static AR15SetupTool()
         {
@@ -187,9 +187,12 @@ namespace VRAtis.EditorTools
                 muzzleTransform.rotation = Quaternion.LookRotation(recoilPivot.forward, recoilPivot.up);
             }
 
-            // Setup 5.56 brass casing prefab + RifleMechanismController (bolt cycle, first-shot dust cover, casing ejection)
+            // Setup 5.56 brass casing prefab + RifleMechanismController (bolt cycle, charging handle, first-shot dust cover, casing ejection)
             EjectedCasing casingPrefab = BuildOrLoadCasingPrefab();
             Transform boltCarrier = FindDeepChild(instance.transform, "AR15_BoltCarrier");
+            Transform chargingHandle = FindDeepChild(instance.transform, "reciver1_low.003_3_0") ??
+                                       FindDeepChild(instance.transform, "reciver1_low.003") ??
+                                       FindDeepChild(instance.transform, "AR15_ChargingHandle");
             Transform dustCover = FindDeepChild(instance.transform, "AR15_DustCover");
             Transform ejectionPoint = FindDeepChild(instance.transform, "EjectionPoint");
             Transform magazineTransform = FindDeepChild(instance.transform, "reciver1_low.005_3_0") ??
@@ -248,6 +251,7 @@ namespace VRAtis.EditorTools
 
             SerializedObject mechSo = new SerializedObject(mech);
             mechSo.FindProperty("boltCarrierTransform").objectReferenceValue = boltCarrier;
+            mechSo.FindProperty("chargingHandleTransform").objectReferenceValue = chargingHandle;
             mechSo.FindProperty("dustCoverTransform").objectReferenceValue = dustCover;
             mechSo.FindProperty("ejectionPoint").objectReferenceValue = ejectionPoint;
             mechSo.FindProperty("magazineTransform").objectReferenceValue = magazineTransform;
@@ -257,6 +261,14 @@ namespace VRAtis.EditorTools
                 Vector3 boltBackAxis = boltCarrier.parent.InverseTransformDirection(-recoilPivot.forward).normalized;
                 mechSo.FindProperty("boltSlideLocalAxis").vector3Value = boltBackAxis;
             }
+            if (chargingHandle != null && chargingHandle.parent != null)
+            {
+                Vector3 chargeBackAxis = chargingHandle.parent.InverseTransformDirection(-recoilPivot.forward).normalized;
+                mechSo.FindProperty("chargingHandleSlideLocalAxis").vector3Value = chargeBackAxis;
+            }
+            mechSo.FindProperty("chargingPullBackDurationSec").floatValue = 0.175f;
+            mechSo.FindProperty("chargingRearHoldDurationSec").floatValue = 0.300f;
+            mechSo.FindProperty("chargingSnapForwardDurationSec").floatValue = 0.095f;
             if (dustCover != null && dustCover.parent != null)
             {
                 Vector3 dcAxis = dustCover.parent.InverseTransformDirection(-recoilPivot.forward).normalized;
@@ -280,8 +292,8 @@ namespace VRAtis.EditorTools
             AudioClip casing02 = LoadConfiguredShotClip($"{AudioFolderPath}/CasingBounce_02.wav");
             AudioClip magEject01 = LoadConfiguredShotClip($"{AudioFolderPath}/MagEject_01.wav");
             AudioClip magEject02 = LoadConfiguredShotClip($"{AudioFolderPath}/MagEject_02.wav");
-            AudioClip magInsert01 = LoadConfiguredShotClip($"{AudioFolderPath}/MagInsert_01.wav");
             AudioClip magInsert02 = LoadConfiguredShotClip($"{AudioFolderPath}/MagInsert_02.wav");
+            AudioClip chargeRack01 = LoadConfiguredShotClip($"{AudioFolderPath}/ChargingHandle_Rack_01.wav");
 
             SerializedObject audioSo = new SerializedObject(audioCtrl);
             audioSo.FindProperty("muzzleTransform").objectReferenceValue = muzzleTransform;
@@ -292,6 +304,7 @@ namespace VRAtis.EditorTools
             audioSo.FindProperty("casingSpatialBlend").floatValue = 0.85f;
             audioSo.FindProperty("magVolume").floatValue = 0.72f;
             audioSo.FindProperty("magSpatialBlend").floatValue = 0.35f;
+            audioSo.FindProperty("chargingHandleVolume").floatValue = 0.85f;
             audioSo.FindProperty("enableMountainValleyReverb").boolValue = false;
             GameObject oldReverb = GameObject.Find("MountainValley_ReverbZone");
             if (oldReverb != null) Object.DestroyImmediate(oldReverb);
@@ -299,7 +312,8 @@ namespace VRAtis.EditorTools
             SetAudioClipArray(audioSo.FindProperty("gunshotClips"), shot01, shot02);
             SetAudioClipArray(audioSo.FindProperty("casingBounceClips"), casing01, casing02);
             SetAudioClipArray(audioSo.FindProperty("magEjectClips"), magEject01, magEject02);
-            SetAudioClipArray(audioSo.FindProperty("magInsertClips"), magInsert01, magInsert02);
+            SetAudioClipArray(audioSo.FindProperty("magInsertClips"), magInsert02);
+            SetAudioClipArray(audioSo.FindProperty("chargingHandleClips"), chargeRack01);
             audioSo.ApplyModifiedPropertiesWithoutUndo();
 
             SerializedObject mechAudioSo = new SerializedObject(mech);
@@ -321,6 +335,7 @@ namespace VRAtis.EditorTools
                 EnsurePersistentListener(weapon.onWeaponFired, audioCtrl, nameof(RifleAudioController.PlayGunshot));
                 EnsurePersistentListener(weapon.onMagazineEjected, audioCtrl, nameof(RifleAudioController.PlayMagEject));
                 EnsurePersistentListener(weapon.onMagazineInserted, audioCtrl, nameof(RifleAudioController.PlayMagInsert));
+                EnsurePersistentListener(weapon.onChargingHandleRacked, audioCtrl, nameof(RifleAudioController.PlayChargingHandleRack));
                 EditorUtility.SetDirty(weapon);
             }
 
@@ -566,6 +581,8 @@ namespace VRAtis.EditorTools
                     UnityEventTools.AddPersistentListener(evt, audioCtrl.PlayMagEject);
                 else if (methodName == nameof(RifleAudioController.PlayMagInsert))
                     UnityEventTools.AddPersistentListener(evt, audioCtrl.PlayMagInsert);
+                else if (methodName == nameof(RifleAudioController.PlayChargingHandleRack))
+                    UnityEventTools.AddPersistentListener(evt, audioCtrl.PlayChargingHandleRack);
             }
         }
 

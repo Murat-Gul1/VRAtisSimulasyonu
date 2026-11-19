@@ -21,7 +21,8 @@ namespace VRAtis.Weapons
             None,
             EjectWait,
             Inserting,
-            BoltReleaseWait
+            ChargingHandleDelay,
+            ChargingHandleCycle
         }
 
         [Header("Referanslar")]
@@ -47,7 +48,10 @@ namespace VRAtis.Weapons
         [SerializeField] private float autoReloadDelaySec = 0.35f;
         [SerializeField] private float ejectToSwapDelaySec = 0.52f;
         [SerializeField] private float insertSeatDurationSec = 0.26f;
-        [SerializeField] private float boltReleaseDelaySec = 0.14f;
+        [Tooltip("Şarjör yerine oturduktan sonra kurma kolunun çekilmeye başlaması için kısa bekleme (sn).")]
+        [SerializeField] private float chargingHandleDelaySec = 0.14f;
+        [Tooltip("Şarjör takıldıktan sonra kurma kolunu otomatik çekip bırakır ve sesiyle senkronize eder.")]
+        [SerializeField] private bool rackChargingHandleOnMagInsert = true;
 
         [Header("Geri Tepme (Görsel Child Pivot)")]
         [Tooltip("ESP32 ana rotasyonunu bozmamak için silah modelini taşıyan alt Transform.")]
@@ -65,6 +69,7 @@ namespace VRAtis.Weapons
         public UnityEvent onDryFire;
         public UnityEvent onMagazineEjected;
         public UnityEvent onMagazineInserted;
+        public UnityEvent onChargingHandleRacked;
         public UnityEvent onBoltReleased;
 
         public int CurrentAmmo { get; private set; }
@@ -149,6 +154,8 @@ namespace VRAtis.Weapons
                     Reload();
                 else if (Keyboard.current.vKey.wasPressedThisFrame)
                     ToggleMagazine();
+                else if (Keyboard.current.cKey.wasPressedThisFrame)
+                    RackChargingHandle();
 
                 if (allowEditorTestFire && Application.isEditor)
                 {
@@ -270,6 +277,14 @@ namespace VRAtis.Weapons
             BeginInsertFreshMagazine();
         }
 
+        public void RackChargingHandle()
+        {
+            if (IsReloading)
+                return;
+
+            StartChargingHandleCycle();
+        }
+
         private void BeginInsertFreshMagazine()
         {
             IsMagazineInserted = true;
@@ -280,6 +295,21 @@ namespace VRAtis.Weapons
 
             _reloadPhase = ReloadPhase.Inserting;
             _reloadTimer = insertSeatDurationSec;
+        }
+
+        private void StartChargingHandleCycle()
+        {
+            IsBoltLockedOpen = false;
+            if (mechanismController != null)
+                mechanismController.CycleChargingHandle();
+
+            onChargingHandleRacked?.Invoke();
+            onBoltReleased?.Invoke();
+
+            _reloadPhase = ReloadPhase.ChargingHandleCycle;
+            _reloadTimer = mechanismController != null
+                ? mechanismController.ChargingCycleTotalDuration
+                : 0.30f;
         }
 
         private void UpdateReloadState(float dt)
@@ -308,22 +338,22 @@ namespace VRAtis.Weapons
             }
             else if (_reloadPhase == ReloadPhase.Inserting)
             {
-                if (IsBoltLockedOpen)
+                if (rackChargingHandleOnMagInsert || IsBoltLockedOpen)
                 {
-                    _reloadPhase = ReloadPhase.BoltReleaseWait;
-                    _reloadTimer = boltReleaseDelaySec;
+                    _reloadPhase = ReloadPhase.ChargingHandleDelay;
+                    _reloadTimer = Mathf.Max(0.02f, chargingHandleDelaySec);
                 }
                 else
                 {
                     _reloadPhase = ReloadPhase.None;
                 }
             }
-            else if (_reloadPhase == ReloadPhase.BoltReleaseWait)
+            else if (_reloadPhase == ReloadPhase.ChargingHandleDelay)
             {
-                IsBoltLockedOpen = false;
-                if (mechanismController != null)
-                    mechanismController.ReleaseBoltCatch();
-                onBoltReleased?.Invoke();
+                StartChargingHandleCycle();
+            }
+            else if (_reloadPhase == ReloadPhase.ChargingHandleCycle)
+            {
                 _reloadPhase = ReloadPhase.None;
             }
         }

@@ -125,6 +125,33 @@ namespace VRAtis.Hardware
         [SerializeField] private float steadyHoldSeconds = 5.0f;
         [SerializeField] private float completedBannerDurationSeconds = 2.0f;
 
+        [Header("Optik 2-LED Yatay Kayma Kilidi (Opsiyonel)")]
+        [Tooltip("Kapalı (önerilen): Çoklu hedeflerde omuz-göz paralaksından yapay kayma oluşturmaz; kamera yalnız 3B pozisyon (X,Y,Z) izler.")]
+        [SerializeField] private bool enableOpticalYawFusion = false;
+        [Tooltip("Red Dot (ADS) açıkken optik yatay kayma düzeltme zaman sabiti (sn).")]
+        [Range(0.4f, 4.0f)]
+        [SerializeField] private float adsYawFusionTimeConstantSec = 1.60f;
+        [Tooltip("Hazır duruşta (Red Dot kapalı) optik yatay kayma düzeltme zaman sabiti (sn).")]
+        [Range(0.8f, 5.0f)]
+        [SerializeField] private float readyYawFusionTimeConstantSec = 2.40f;
+        [Tooltip("Alt-piksel kamera gürültüsünü önleyen ölü bölge (derece).")]
+        [Range(0.05f, 1.5f)]
+        [SerializeField] private float opticalYawDeadbandDeg = 0.35f;
+        [Tooltip("Maksimum optik yatay düzeltme hızı (derece/sn). Sıçramasız yumuşak düzeltme sağlar.")]
+        [Range(1f, 15f)]
+        [SerializeField] private float maxOpticalYawCorrectionDegPerSec = 4f;
+        [Tooltip("Bu hızın (derece/sn) üzerindeki hareketlerde optik füzyon bekler, 1000 Hz ESP32 IMU tek başına sürer.")]
+        [Range(5f, 45f)]
+        [SerializeField] private float maxFusionAngularSpeedDegPerSec = 10f;
+        [Tooltip("ADS yanak temasında LED'ler referans açıdan bu kadar saparsa (hedef geçişi/paralaks) füzyon duraklatılır.")]
+        [Range(1.0f, 12f)]
+        [SerializeField] private float maxAdsBearingDeviationDeg = 2.5f;
+        [Range(2.0f, 15f)]
+        [SerializeField] private float maxReadyBearingDeviationDeg = 4.0f;
+        [Tooltip("Oda lambası gibi sahte yansımalara karşı maksimum tek seferlik açı farkı sınırı (derece).")]
+        [Range(8f, 35f)]
+        [SerializeField] private float maxOpticalYawInnovationDeg = 18.0f;
+
         // Public status properties for Settings UI & WeaponAimController
         public bool IsOpticalTrackingEnabled
         {
@@ -195,6 +222,22 @@ namespace VRAtis.Hardware
         public bool IsTrackingRuntimeSupported => enableOpticalTracking && (Application.isMobilePlatform || runWebcamInEditor);
         public bool IsCameraRunning => _webCamTex != null && _webCamTex.isPlaying;
         public bool IsActivelyTrackingPosition => enableOpticalTracking && IsCameraRunning && _hasStableLock && _hasCalibratedZero;
+        public bool IsOpticalYawFusionEnabled
+        {
+            get => enableOpticalYawFusion;
+            set
+            {
+                enableOpticalYawFusion = value;
+                if (!value)
+                {
+                    IsOpticalYawFusionActive = false;
+                    _activeOpticalYawRateDegPerSec = 0f;
+                }
+            }
+        }
+        public bool IsOpticalYawFusionActive { get; private set; }
+        public float LastOpticalYawErrorDeg { get; private set; }
+        public float LearnedOpticalYawDriftRateDegPerSec { get; private set; }
         public bool IsLedAFound { get; private set; }
         public bool IsLedBFound { get; private set; }
         public bool HasCalibratedZero => _hasCalibratedZero;
@@ -307,6 +350,7 @@ namespace VRAtis.Hardware
         private bool _resLedA;
         private bool _resLedB;
         private Vector3 _resRawCamPos;
+        private Quaternion _resSnapCamRot = Quaternion.identity;
         private float _resDistanceMeters;
         private float _resSepPx;
         private uint _resSeq;
@@ -350,6 +394,18 @@ namespace VRAtis.Hardware
         private RifleOrientationController _rifleOrientationController;
         private float _androidPermRetryTimer;
         private bool _permissionRequestedOnce;
+
+        // Layer 2: 2-LED Optical-IMU Yaw Lock state
+        private bool _hasReadyOptYawRef;
+        private float _readyBaseCamBearingDeg;
+        private float _readyOptToRifleYawOffsetDeg;
+        private bool _wasAimingForOpticalYaw;
+        private bool _hasAdsOptYawRef;
+        private float _adsBaseCamBearingDeg;
+        private float _adsOptToRifleYawOffsetDeg;
+        private float _learnedYawDriftRateDegPerSec;
+        private float _activeOpticalYawRateDegPerSec;
+        private float _lastOpticalYawUpdateTime;
 
         private void Awake()
         {
@@ -439,9 +495,11 @@ namespace VRAtis.Hardware
 
             if (!startGuidedCountdown && _hasStableLock)
             {
+                Quaternion zeroSnapCamRot;
                 lock (_resultLock)
                 {
                     _zeroRawCamPos = _resRawCamPos;
+                    zeroSnapCamRot = _resSnapCamRot;
                 }
                 _zeroAvgCount = 1;
                 _lastAcceptedRawCamPos = _zeroRawCamPos;
@@ -453,6 +511,8 @@ namespace VRAtis.Hardware
                 _pendingZeroCapture = false;
                 _calibrationPhase = CalibrationPhase.CompletedBanner;
                 _calPhaseTimer = completedBannerDurationSeconds;
+                ResetOpticalYawFusionState();
+                CaptureReadyOpticalYawReference(_zeroRawCamPos, zeroSnapCamRot);
             }
             else
             {
@@ -466,6 +526,7 @@ namespace VRAtis.Hardware
                 _currentCamLocalOffset = readyLocalOffsetMeters;
                 _smoothedLocalOffset = readyLocalOffsetMeters;
                 _posInitialized = false;
+                ResetOpticalYawFusionState();
 
                 if (startGuidedCountdown && vrInsertGraceSeconds > 0.1f)
                 {
@@ -581,6 +642,7 @@ namespace VRAtis.Hardware
             bool foundA = false;
             bool foundB = false;
             Vector3 rawCamPos = Vector3.zero;
+            Quaternion resSnapCamRot = headCameraTransform.rotation;
             float distMeters = 0f;
             float sepPxCopy = 0f;
 
@@ -594,6 +656,7 @@ namespace VRAtis.Hardware
                     gotNewResult = true;
                     detectedNow = _resDetected;
                     rawCamPos = _resRawCamPos;
+                    resSnapCamRot = _resSnapCamRot;
                     distMeters = _resDistanceMeters;
                     sepPxCopy = _resSepPx;
                 }
@@ -633,6 +696,8 @@ namespace VRAtis.Hardware
             Vector3 cFwd = new Vector3(headCameraTransform.forward.x, 0f, headCameraTransform.forward.z);
             float camFlatYawDeg = cFwd.sqrMagnitude > 1e-4f ? Mathf.Atan2(cFwd.x, cFwd.z) * Mathf.Rad2Deg : 0f;
 
+            bool acceptedOpticalSample = false;
+
             if (gotNewResult && detectedNow)
             {
                 bool rejectOutlier = _hasStableLock
@@ -648,6 +713,7 @@ namespace VRAtis.Hardware
                 }
                 else
                 {
+                    acceptedOpticalSample = true;
                     _spikeRejectCount = 0;
                     _unseenSeconds = 0f;
                     _lastAcceptedRawCamPos = rawCamPos;
@@ -670,6 +736,8 @@ namespace VRAtis.Hardware
                         _pendingZeroCapture = false;
                         _calibrationPhase = CalibrationPhase.CompletedBanner;
                         _calPhaseTimer = completedBannerDurationSeconds;
+                        ResetOpticalYawFusionState();
+                        CaptureReadyOpticalYawReference(_zeroRawCamPos, resSnapCamRot);
                     }
                     else if (!_hasCalibratedZero)
                     {
@@ -786,6 +854,9 @@ namespace VRAtis.Hardware
 
                         if (_rifleOrientationController != null)
                             _rifleOrientationController.RecenterToHeadForward();
+
+                        ResetOpticalYawFusionState();
+                        CaptureReadyOpticalYawReference(_zeroRawCamPos, headCameraTransform.rotation);
                     }
                 }
                 else
@@ -866,7 +937,200 @@ namespace VRAtis.Hardware
             if ((transform.position - _smoothedWorldPos).sqrMagnitude > 1e-8f)
                 transform.position = _smoothedWorldPos;
 
+            UpdateOpticalYawFusion(dt, acceptedOpticalSample, rawCamPos, resSnapCamRot, hasRifleYaw);
             UpdateAutoRedDotNearEye();
+        }
+
+        private void ResetOpticalYawFusionState()
+        {
+            _hasReadyOptYawRef = false;
+            _hasAdsOptYawRef = false;
+            _learnedYawDriftRateDegPerSec = 0f;
+            _activeOpticalYawRateDegPerSec = 0f;
+            _lastOpticalYawUpdateTime = 0f;
+            IsOpticalYawFusionActive = false;
+            LastOpticalYawErrorDeg = 0f;
+            LearnedOpticalYawDriftRateDegPerSec = 0f;
+        }
+
+        private void CaptureReadyOpticalYawReference(Vector3 ledCamPos, Quaternion camWorldRot)
+        {
+            if (ledCamPos.z < 0.14f || ledCamPos.z > 1.20f)
+                return;
+
+            Vector3 optWorldDir = camWorldRot * ledCamPos;
+            Vector3 flatOptDir = new Vector3(optWorldDir.x, 0f, optWorldDir.z);
+            Vector3 flatRifleFwd = new Vector3(transform.forward.x, 0f, transform.forward.z);
+            if (flatOptDir.sqrMagnitude < 1e-4f || flatRifleFwd.sqrMagnitude < 1e-4f)
+                return;
+
+            float optWorldYawDeg = Mathf.Atan2(flatOptDir.x, flatOptDir.z) * Mathf.Rad2Deg;
+            float curRifleYawDeg = Mathf.Atan2(flatRifleFwd.x, flatRifleFwd.z) * Mathf.Rad2Deg;
+
+            _readyBaseCamBearingDeg = Mathf.Atan2(ledCamPos.x, ledCamPos.z) * Mathf.Rad2Deg;
+            _readyOptToRifleYawOffsetDeg = Mathf.DeltaAngle(optWorldYawDeg, curRifleYawDeg);
+            _hasReadyOptYawRef = true;
+        }
+
+        /// <summary>
+        /// Layer 2 (2-LED Optical-IMU Yaw Lock): uses the phone rear camera's drift-free 2-LED bearing
+        /// to gently cancel slow 6-DOF horizontal yaw drift on ESP32/head tracking without interfering
+        /// with fast turns, free head-look, or gravity-referenced Pitch/Roll.
+        /// </summary>
+        private void UpdateOpticalYawFusion(
+            float dt,
+            bool gotValidSample,
+            Vector3 rawCamPos,
+            Quaternion sampleCamWorldRot,
+            bool hasRifleYaw)
+        {
+            bool isAiming = weaponAimController != null && weaponAimController.IsAiming;
+            if (isAiming != _wasAimingForOpticalYaw)
+            {
+                _wasAimingForOpticalYaw = isAiming;
+                _hasAdsOptYawRef = false;
+                _activeOpticalYawRateDegPerSec = 0f;
+            }
+
+            bool inCalibrationCountdown = _calibrationPhase == CalibrationPhase.PreparingHeadset
+                || _calibrationPhase == CalibrationPhase.HoldingSteady;
+
+            if (!enableOpticalYawFusion
+                || !enableOpticalTracking
+                || !IsCameraRunning
+                || inCalibrationCountdown
+                || _rifleOrientationController == null
+                || !hasRifleYaw)
+            {
+                _activeOpticalYawRateDegPerSec = Mathf.MoveTowards(_activeOpticalYawRateDegPerSec, 0f, 35f * dt);
+                IsOpticalYawFusionActive = false;
+                return;
+            }
+
+            float rifleSpeed = _rifleOrientationController.EstimatedAngularSpeedDegPerSec;
+            float headSpeed = _headTracker != null ? _headTracker.EstimatedHeadSpeedDegPerSec : 0f;
+            bool steadyEnough = rifleSpeed < maxFusionAngularSpeedDegPerSec && headSpeed < maxFusionAngularSpeedDegPerSec;
+
+            if (!steadyEnough || _unseenSeconds > 0.12f)
+            {
+                _activeOpticalYawRateDegPerSec = Mathf.MoveTowards(_activeOpticalYawRateDegPerSec, 0f, 40f * dt);
+                IsOpticalYawFusionActive = false;
+                return;
+            }
+
+            if (gotValidSample)
+            {
+                float now = Time.unscaledTime;
+                float opticalDt = _lastOpticalYawUpdateTime > 0f
+                    ? Mathf.Clamp(now - _lastOpticalYawUpdateTime, 0.01f, 0.15f)
+                    : 0.033f;
+                _lastOpticalYawUpdateTime = now;
+
+                bool geometryValid = rawCamPos.z >= 0.14f
+                    && rawCamPos.z <= 1.15f
+                    && Mathf.Abs((sampleCamWorldRot * Vector3.forward).y) < 0.65f;
+
+                if (geometryValid)
+                {
+                    Vector3 optWorldDir = sampleCamWorldRot * rawCamPos;
+                    Vector3 flatOptDir = new Vector3(optWorldDir.x, 0f, optWorldDir.z);
+                    Vector3 flatRifleFwd = new Vector3(transform.forward.x, 0f, transform.forward.z);
+
+                    if (flatOptDir.sqrMagnitude > 1e-4f && flatRifleFwd.sqrMagnitude > 1e-4f)
+                    {
+                        float camBearingDeg = Mathf.Atan2(rawCamPos.x, rawCamPos.z) * Mathf.Rad2Deg;
+                        float optWorldYawDeg = Mathf.Atan2(flatOptDir.x, flatOptDir.z) * Mathf.Rad2Deg;
+                        float curRifleYawDeg = Mathf.Atan2(flatRifleFwd.x, flatRifleFwd.z) * Mathf.Rad2Deg;
+
+                        bool sampleFused = false;
+
+                        if (isAiming)
+                        {
+                            float aimBlend = weaponAimController != null ? weaponAimController.AimBlend : 1f;
+                            if (aimBlend >= 0.96f)
+                            {
+                                if (!_hasAdsOptYawRef)
+                                {
+                                    if (rifleSpeed < 24f && headSpeed < 24f)
+                                    {
+                                        _adsBaseCamBearingDeg = camBearingDeg;
+                                        _adsOptToRifleYawOffsetDeg = Mathf.DeltaAngle(optWorldYawDeg, curRifleYawDeg);
+                                        _hasAdsOptYawRef = true;
+                                    }
+                                }
+                                else
+                                {
+                                    float bearingDev = Mathf.Abs(Mathf.DeltaAngle(_adsBaseCamBearingDeg, camBearingDeg));
+                                    if (bearingDev <= maxAdsBearingDeviationDeg)
+                                    {
+                                        float expectedRifleYaw = optWorldYawDeg + _adsOptToRifleYawOffsetDeg;
+                                        float errDeg = Mathf.DeltaAngle(curRifleYawDeg, expectedRifleYaw);
+                                        if (Mathf.Abs(errDeg) <= maxOpticalYawInnovationDeg)
+                                        {
+                                            float effErr = Mathf.Abs(errDeg) <= opticalYawDeadbandDeg
+                                                ? 0f
+                                                : errDeg - Mathf.Sign(errDeg) * opticalYawDeadbandDeg;
+
+                                            // Pure gentle proportional damping only (no integrator windup from shoulder-vs-eye parallax)
+                                            _learnedYawDriftRateDegPerSec = 0f;
+
+                                            float targetRate = Mathf.Clamp(
+                                                effErr / Mathf.Max(0.40f, adsYawFusionTimeConstantSec),
+                                                -maxOpticalYawCorrectionDegPerSec,
+                                                maxOpticalYawCorrectionDegPerSec);
+
+                                            _activeOpticalYawRateDegPerSec = Mathf.Lerp(_activeOpticalYawRateDegPerSec, targetRate, 0.30f);
+                                            LastOpticalYawErrorDeg = errDeg;
+                                            IsOpticalYawFusionActive = true;
+                                            sampleFused = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        else if (_hasCalibratedZero && _hasReadyOptYawRef)
+                        {
+                            float bearingDev = Mathf.Abs(Mathf.DeltaAngle(_readyBaseCamBearingDeg, camBearingDeg));
+                            if (bearingDev <= maxReadyBearingDeviationDeg)
+                            {
+                                float expectedRifleYaw = optWorldYawDeg + _readyOptToRifleYawOffsetDeg;
+                                float errDeg = Mathf.DeltaAngle(curRifleYawDeg, expectedRifleYaw);
+                                if (Mathf.Abs(errDeg) <= maxOpticalYawInnovationDeg)
+                                {
+                                    float readyDeadband = opticalYawDeadbandDeg * 1.5f;
+                                    float effErr = Mathf.Abs(errDeg) <= readyDeadband
+                                        ? 0f
+                                        : errDeg - Mathf.Sign(errDeg) * readyDeadband;
+
+                                    float maxReadyRate = maxOpticalYawCorrectionDegPerSec * 0.5f;
+                                    float targetRate = Mathf.Clamp(
+                                        effErr / Mathf.Max(0.5f, readyYawFusionTimeConstantSec),
+                                        -maxReadyRate,
+                                        maxReadyRate);
+
+                                    _activeOpticalYawRateDegPerSec = Mathf.Lerp(_activeOpticalYawRateDegPerSec, targetRate, 0.35f);
+                                    LastOpticalYawErrorDeg = errDeg;
+                                    IsOpticalYawFusionActive = true;
+                                    sampleFused = true;
+                                }
+                            }
+                        }
+
+                        if (!sampleFused)
+                        {
+                            _activeOpticalYawRateDegPerSec = Mathf.MoveTowards(_activeOpticalYawRateDegPerSec, 0f, 30f * opticalDt);
+                            IsOpticalYawFusionActive = false;
+                        }
+                    }
+                }
+            }
+
+            LearnedOpticalYawDriftRateDegPerSec = _learnedYawDriftRateDegPerSec;
+
+            if (IsOpticalYawFusionActive && Mathf.Abs(_activeOpticalYawRateDegPerSec) > 0.005f)
+            {
+                _rifleOrientationController.ApplyOpticalYawCorrection(_activeOpticalYawRateDegPerSec * dt);
+            }
         }
 
         private Vector3 ComputeBodyYawFallbackWorldPos(Vector3 headOrigin, bool hasRifleYaw, float rifleFlatYawDeg, float camFlatYawDeg)
@@ -1189,6 +1453,7 @@ namespace VRAtis.Hardware
                     _resLedA = true;
                     _resLedB = true;
                     _resRawCamPos = rawCamPos;
+                    _resSnapCamRot = _snapCamRot;
                     _resDistanceMeters = ledDistMeters;
                     _resSepPx = _filteredSepPx;
                     _resSeq++;

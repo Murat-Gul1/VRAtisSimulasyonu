@@ -31,6 +31,9 @@ namespace VRAtis.Weapons
         [Tooltip("PC'de nişan alırken kamera bakışını da yumuşakça Red Dot nişan hattına hizalar.")]
         [SerializeField] private bool alignCameraRotationWhenNoMobileSensor = true;
 
+        [Tooltip("Kapalı (önerilen): Red Dot açıldığında tüfek yönünü merkeze çekmez, çoklu hedeflerde kayma/sıçrama yapmaz.")]
+        [SerializeField] private bool recenterYawOnRedDotOpen = false;
+
         [Header("Kamera Yaklaşma Animasyonu (Omuzlama / ADS)")]
         [Tooltip("Kameranın hazır duruştan Red Dot arkasına kayma süresi (saniye).")]
         [Range(0.08f, 0.8f)]
@@ -136,9 +139,7 @@ namespace VRAtis.Weapons
             }
             else if (!_wasShoulderPressed)
             {
-                // Re-zero ESP32 IMU once at the instant Red Dot opens (after at least 0.30s unshouldered)
-                // so accumulated IMU gyro drift is cleared while head rotation remains free after opening.
-                if (_unshoulderedTimer >= 0.30f && _rifleOrientationController != null)
+                if (recenterYawOnRedDotOpen && _unshoulderedTimer >= 0.30f && _rifleOrientationController != null)
                 {
                     _rifleOrientationController.RecenterToHeadForward();
                 }
