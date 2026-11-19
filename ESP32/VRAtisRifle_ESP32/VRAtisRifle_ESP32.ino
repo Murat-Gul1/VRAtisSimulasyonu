@@ -40,8 +40,9 @@ const uint32_t MAG_INTERVAL_US        = 10000; // 100 Hz (10 ms) isteğe bağlı
 const uint32_t UDP_INTERVAL_US        = 5000;  // 200 Hz (5 ms) UDP paket gönderimi
 const uint32_t MIN_UDP_GAP_US         = 2000;  // Wi-Fi TX koruması (2 ms)
 const uint32_t MIN_SHOT_INTERVAL_US   = 35000; // Tetik ark koruması (35 ms)
-const uint32_t RELEASE_DEBOUNCE_US    = 25000; // Tetik bırakma kararlılığı (25 ms)
-const uint32_t SHOULDER_DEBOUNCE_US   = 30000; // Omuz sensörü sıçrama koruması (30 ms)
+const uint32_t TRIGGER_CONFIRM_US     = 12000; // Tetik basış onay süresi (12 ms kesintisiz LOW -> GPIO16 parazit/ESD reddi)
+const uint32_t RELEASE_DEBOUNCE_US    = 25000; // Tetik bırakma kararlılığı (25 ms kesintisiz HIGH)
+const uint32_t SHOULDER_DEBOUNCE_US   = 30000; // Omuz sensörü sıçrama koruması (30 ms kesintisiz durum)
 const uint32_t DEBUG_INTERVAL_MS      = 1000;  // 1 Hz durum çıktısı
 
 // --- SENSÖR ÖLÇEK SABİTLERİ ---
@@ -145,16 +146,23 @@ bool hasMagCal                = false;
 bool hasFlashGyroCal          = false;
 bool magAnomalyActive         = false;
 
-// Tetik & Omuz Kesme Değişkenleri
-volatile bool triggerEventFlag        = false;
-volatile bool triggerArmed            = true;
-volatile uint32_t interruptCounter    = 0;
-volatile uint32_t lastTriggerPressUs  = 0;
-uint32_t highStateStartUs             = 0;
+// Tetik & Omuz Kararlı Filtre Değişkenleri (Ham edge-ISR yerine 12ms/30ms kesintisiz onay)
+bool triggerEventFlag                 = false;
+bool triggerArmed                     = true;
+uint32_t interruptCounter             = 0;
+uint32_t lastTriggerPressUs           = 0;
+bool trigLowTracking                  = false;
+uint32_t trigLowStartUs               = 0;
+uint16_t trigLowSamples               = 0;
+bool trigHighTracking                 = false;
+uint32_t trigHighStartUs              = 0;
+uint32_t triggerGlitchRejected        = 0;
 
-volatile bool shoulderEventFlag       = false;
-volatile uint8_t shoulderState        = 0;
-volatile uint32_t lastShoulderIrqUs   = 0;
+bool shoulderEventFlag                = false;
+uint8_t shoulderState                 = 0;
+bool shoulderPendingTracking          = false;
+uint8_t shoulderPendingVal            = 0;
+uint32_t shoulderPendingStartUs       = 0;
 
 // Ham sensör verileri (Yalnız Core 1 imuTask erişir)
 int16_t rawAx = 0, rawAy = 0, rawAz = 0;
@@ -196,26 +204,6 @@ bool magSampleValid = false;
 float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;
 float yawBiasEarthZ = 0.0f;
 uint32_t bootMillis = 0;
-
-// --- KESMELER (IRAM) ---
-void IRAM_ATTR onTriggerPress() {
-  uint32_t now = micros();
-  if (triggerArmed && (now - lastTriggerPressUs >= MIN_SHOT_INTERVAL_US)) {
-    triggerArmed = false;
-    lastTriggerPressUs = now;
-    interruptCounter = interruptCounter + 1;
-    triggerEventFlag = true;
-  }
-}
-
-void IRAM_ATTR onShoulderChange() {
-  uint32_t now = micros();
-  if (now - lastShoulderIrqUs >= SHOULDER_DEBOUNCE_US) {
-    lastShoulderIrqUs = now;
-    shoulderState = (digitalRead(SHOULDER_PIN) == LOW) ? 1 : 0;
-    shoulderEventFlag = true;
-  }
-}
 
 // --- I2C YARDIMCILARI (Yalnız setup() ve Core 1 imuTask çağırır) ---
 static inline TickType_t msToTicksSafe(uint32_t ms) {
@@ -1409,7 +1397,7 @@ void sendUDPPacket(bool forceTriggerHigh, const SharedImuSnapshot& snap) {
   packet.qx            = snap.qx;
   packet.qy            = snap.qy;
   packet.qz            = snap.qz;
-  packet.triggerState  = forceTriggerHigh ? 1 : ((digitalRead(TRIGGER_PIN) == LOW) ? 1 : 0);
+  packet.triggerState  = (forceTriggerHigh || !triggerArmed) ? 1 : 0;
   packet.shotCount     = interruptCounter;
   packet.shoulderState = shoulderState;
 
@@ -1527,27 +1515,69 @@ void netTaskFn(void* param) {
   for (;;) {
     uint32_t nowUs = micros();
 
-    // 1) Tetik Bırakma Sıçrama Koruması (25 ms kesintisiz HIGH)
-    if (!triggerArmed) {
-      if (digitalRead(TRIGGER_PIN) == HIGH) {
-        if (highStateStartUs == 0) {
-          highStateStartUs = nowUs;
-        } else if (nowUs - highStateStartUs >= RELEASE_DEBOUNCE_US) {
+    // 1) Tetik Kararlı Basış & Bırakma Filtresi (GPIO 15: 12 ms kesintisiz LOW onayı -> GPIO 16 parazit/ESD tamamen engellenir)
+    bool trigLow = (digitalRead(TRIGGER_PIN) == LOW);
+    if (triggerArmed) {
+      if (trigLow) {
+        if (!trigLowTracking) {
+          trigLowTracking = true;
+          trigLowStartUs = nowUs;
+          trigLowSamples = 1;
+        } else {
+          trigLowSamples++;
+          if ((nowUs - trigLowStartUs >= TRIGGER_CONFIRM_US) &&
+              (trigLowSamples >= 6) &&
+              (nowUs - lastTriggerPressUs >= MIN_SHOT_INTERVAL_US)) {
+            triggerArmed = false;
+            trigLowTracking = false;
+            trigLowSamples = 0;
+            trigHighTracking = false;
+            lastTriggerPressUs = nowUs;
+            interruptCounter++;
+            triggerEventFlag = true;
+            Serial.printf("[TETIK] GPIO%d onaylandi -> Atis #%lu | Omuz(GPIO%d):%u\n",
+                          TRIGGER_PIN, (unsigned long)interruptCounter, SHOULDER_PIN, shoulderState);
+          }
+        }
+      } else if (trigLowTracking) {
+        // 12 ms dolmadan HIGH'a döndü -> elektriksel parazit / GPIO16 çapraz etkileşim (crosstalk) reddedildi!
+        triggerGlitchRejected++;
+        trigLowTracking = false;
+        trigLowSamples = 0;
+      }
+    } else {
+      if (!trigLow) {
+        if (!trigHighTracking) {
+          trigHighTracking = true;
+          trigHighStartUs = nowUs;
+        } else if (nowUs - trigHighStartUs >= RELEASE_DEBOUNCE_US) {
           triggerArmed = true;
-          highStateStartUs = 0;
+          trigHighTracking = false;
         }
       } else {
-        highStateStartUs = 0;
+        trigHighTracking = false;
       }
     }
 
-    // 2) Omuz sensörü sıçrama sonrası durum eşitleme (30 ms debounce sonrası)
-    if (nowUs - lastShoulderIrqUs >= SHOULDER_DEBOUNCE_US) {
-      uint8_t actualShoulder = (digitalRead(SHOULDER_PIN) == LOW) ? 1 : 0;
-      if (actualShoulder != shoulderState) {
-        shoulderState = actualShoulder;
+    // 2) Omuz Sensörü Kararlı Debounce Filtresi (GPIO 16: 30 ms kesintisiz durum değişimi)
+    uint8_t rawShoulder = (digitalRead(SHOULDER_PIN) == LOW) ? 1 : 0;
+    if (rawShoulder != shoulderState) {
+      if (!shoulderPendingTracking || shoulderPendingVal != rawShoulder) {
+        shoulderPendingTracking = true;
+        shoulderPendingVal = rawShoulder;
+        shoulderPendingStartUs = nowUs;
+      } else if (nowUs - shoulderPendingStartUs >= SHOULDER_DEBOUNCE_US) {
+        shoulderState = rawShoulder;
+        shoulderPendingTracking = false;
         shoulderEventFlag = true;
+        Serial.printf("[OMUZ] GPIO%d -> %s | Tetik(GPIO%d):%u\n",
+                      SHOULDER_PIN,
+                      shoulderState ? "OMUZLANDI (Red Dot ACIK)" : "SERBEST (Red Dot KAPALI)",
+                      TRIGGER_PIN,
+                      trigLow ? 1 : 0);
       }
+    } else {
+      shoulderPendingTracking = false;
     }
 
     // 3) 200 Hz UDP Göndericisi (Acil tetik/omuz olayları anında gönderilir)
@@ -1618,6 +1648,9 @@ void netTaskFn(void* param) {
         if (snap.pwrResetCount > 0) {
           Serial.printf(" | PWR_RST:%lu", (unsigned long)snap.pwrResetCount);
         }
+        if (triggerGlitchRejected > 0) {
+          Serial.printf(" | PARAZIT_ENGEL:%lu", (unsigned long)triggerGlitchRejected);
+        }
         Serial.println();
       }
     }
@@ -1647,10 +1680,7 @@ void setup() {
   portEXIT_CRITICAL(&stateMux);
 
   triggerArmed = (digitalRead(TRIGGER_PIN) == HIGH);
-  attachInterrupt(digitalPinToInterrupt(TRIGGER_PIN), onTriggerPress, FALLING);
-
   shoulderState = (digitalRead(SHOULDER_PIN) == LOW) ? 1 : 0;
-  attachInterrupt(digitalPinToInterrupt(SHOULDER_PIN), onShoulderChange, CHANGE);
 
   // Core 1: İzole 1000 Hz IMU Görevi (Yüksek Öncelik = 6)
   xTaskCreatePinnedToCore(

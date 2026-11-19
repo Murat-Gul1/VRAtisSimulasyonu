@@ -33,6 +33,7 @@ namespace VRAtis.Targets
         [SerializeField] private float lateralTwistDamping = 3.2f;
 
         [Header("Kurşun İzi & Kıvılcım (Zero-GC Havuz)")]
+        [SerializeField] private bool enableSplashMarks = false;
         [SerializeField] private int maxSplashMarks = 28;
         [SerializeField] private float splashMarkDiameterMeters = 0.052f;
         [SerializeField] private float sparkFlashDurationSec = 0.085f;
@@ -83,7 +84,8 @@ namespace VRAtis.Targets
         {
             ResolveDefaults();
             ConfigurePendulumAxis();
-            PrewarmSplashMarks();
+            if (enableSplashMarks)
+                PrewarmSplashMarks();
             PrewarmHitSpark();
             BuildAudioPool();
         }
@@ -262,7 +264,8 @@ namespace VRAtis.Targets
             LastImpactEnergyJoules = impact.KineticEnergyJoules;
 
             ApplyPendulumImpulse(in impact);
-            PlaceSplashMark(gongPlateTransform != null ? gongPlateTransform : transform, in impact, isFrame: false);
+            if (enableSplashMarks)
+                PlaceSplashMark(gongPlateTransform != null ? gongPlateTransform : transform, in impact, isFrame: false);
             TriggerImpactSpark(impact.HitPoint + impact.HitNormal * 0.02f);
             PlayDelayedImpactAudio(gongHitClips, ref _lastGongClipIdx, gongVolume, impact.HitPoint);
             Debug.Log($"[Gong Vuruşu] {name} | İsabet #{HitCount} | Mesafe={LastImpactDistanceMeters:F1}m | Enerji={LastImpactEnergyJoules:F0}J | SalınımHızı={_swingVelRad:F2} rad/s");
@@ -271,7 +274,8 @@ namespace VRAtis.Targets
         public void HandleFrameImpact(in BulletImpactInfo impact)
         {
             _frameShudderTimer = 0.14f;
-            PlaceSplashMark(standFrameTransform != null ? standFrameTransform : transform, in impact, isFrame: true);
+            if (enableSplashMarks)
+                PlaceSplashMark(standFrameTransform != null ? standFrameTransform : transform, in impact, isFrame: true);
             TriggerImpactSpark(impact.HitPoint + impact.HitNormal * 0.02f);
             PlayDelayedImpactAudio(frameClankClips, ref _lastFrameClipIdx, frameVolume, impact.HitPoint);
             Debug.Log($"[Stand Vuruşu] {name} ayağına isabet | Mesafe={impact.DistanceTraveledMeters:F1}m");

@@ -15,7 +15,7 @@ namespace VRAtis.EditorTools
         private const string MatDir = "Assets/Materials/Enemies";
         private const string AudioDir = "Assets/Audio/Targets";
         public const string PrefabPath = "Assets/Prefabs/EnemySoldier_KSK.prefab";
-        private const string AutoSetupVersionKey = "VRAtis_EnemySoldier_V6_Done";
+        private const string AutoSetupVersionKey = "VRAtis_EnemySoldier_V7_Done";
 
         static EnemySoldierSetupTool()
         {
@@ -182,6 +182,12 @@ namespace VRAtis.EditorTools
                 so.ApplyModifiedPropertiesWithoutUndo();
 
                 GameObject savedPrefab = PrefabUtility.SaveAsPrefabAsset(tempRoot, PrefabPath);
+
+                // ÖNEMLİ: Sahneyi kaydetmeden ÖNCE geçici tempRoot'u ve sahnede kalmış sahipsiz askerleri temizle!
+                Object.DestroyImmediate(tempRoot);
+                tempRoot = null;
+                CleanupStraySceneSoldiers();
+
                 WireToTargetRangeManager(savedPrefab);
 
                 AssetDatabase.SaveAssets();
@@ -196,6 +202,18 @@ namespace VRAtis.EditorTools
             {
                 if (tempRoot != null)
                     Object.DestroyImmediate(tempRoot);
+            }
+        }
+
+        private static void CleanupStraySceneSoldiers()
+        {
+            EnemySoldierTarget[] straySoldiers = Object.FindObjectsByType<EnemySoldierTarget>(FindObjectsInactive.Include);
+            for (int i = 0; i < straySoldiers.Length; i++)
+            {
+                if (straySoldiers[i] != null && straySoldiers[i].gameObject.scene.IsValid())
+                {
+                    Object.DestroyImmediate(straySoldiers[i].gameObject);
+                }
             }
         }
 

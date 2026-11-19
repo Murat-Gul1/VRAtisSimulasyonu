@@ -49,6 +49,8 @@ namespace VRAtis.Targets
         public float SpacingMeters => spacingMeters;
         public bool IsCustomDrillActive => isCustomDrillActive;
         public bool IsSoldierAssaultMode => soldierAssaultMode;
+        public TacticalDrillDefinition ActiveDrillPreset => _activeDrillPreset;
+        public TacticalDrillId ActiveDrillId => _activeDrillPreset != null ? _activeDrillPreset.Id : TacticalDrillId.None;
 
         private readonly List<SteelGongTarget> _gongDrillPool = new List<SteelGongTarget>(MaxTargetCount);
         private readonly List<SteelGongTarget> _silhouetteDrillPool = new List<SteelGongTarget>(MaxTargetCount);
@@ -63,9 +65,12 @@ namespace VRAtis.Targets
         private Vector3 _rangeForward = Vector3.forward;
         private Vector3 _rangeRight = Vector3.right;
         private float _soldierWaveRespawnTimer = -1f;
+        private TacticalDrillDefinition _activeDrillPreset;
+        private int _activePresetSoldierCount;
 
         private void Awake()
         {
+            CleanupStraySceneSoldiers();
             ResolveShooterLane();
             CollectClassicTargets();
 
@@ -91,20 +96,24 @@ namespace VRAtis.Targets
         {
             // After all eliminated soldiers in the current wave have vanished, smoothly deploy
             // a fresh wave from the starting line after soldierWaveRespawnDelaySec.
-            if (activeTargetKind != TargetKind.MovingEnemySoldier || enemySoldierPrefab == null)
+            bool presetHasSoldiers = _activeDrillPreset != null && _activePresetSoldierCount > 0;
+            bool soldierModeActive = presetHasSoldiers || activeTargetKind == TargetKind.MovingEnemySoldier;
+            if (!soldierModeActive || enemySoldierPrefab == null)
             {
                 _soldierWaveRespawnTimer = -1f;
                 return;
             }
 
-            if (isCustomDrillActive && targetCount <= 0)
+            if (!presetHasSoldiers && isCustomDrillActive && targetCount <= 0)
             {
                 _soldierWaveRespawnTimer = -1f;
                 return;
             }
 
-            List<EnemySoldierTarget> activeList = isCustomDrillActive ? _soldierDrillPool : _classicSoldierTargets;
-            int expected = isCustomDrillActive ? Mathf.Min(targetCount, activeList.Count) : activeList.Count;
+            List<EnemySoldierTarget> activeList = (presetHasSoldiers || isCustomDrillActive) ? _soldierDrillPool : _classicSoldierTargets;
+            int expected = presetHasSoldiers
+                ? Mathf.Min(_activePresetSoldierCount, activeList.Count)
+                : (isCustomDrillActive ? Mathf.Min(targetCount, activeList.Count) : activeList.Count);
             if (expected <= 0)
                 return;
 
@@ -128,7 +137,9 @@ namespace VRAtis.Targets
                     {
                         _soldierWaveRespawnTimer = -1f;
                         Debug.Log("[Poligon] Tüm düşman askerler etkisiz hale getirildi ve silindi — yeni dalga geliyor!");
-                        if (isCustomDrillActive)
+                        if (presetHasSoldiers)
+                            ApplyTacticalDrillPreset(_activeDrillPreset);
+                        else if (isCustomDrillActive)
                             ApplyCustomDrillLayout();
                         else
                             ApplyClassicRangeLayout();
@@ -138,6 +149,18 @@ namespace VRAtis.Targets
             else
             {
                 _soldierWaveRespawnTimer = -1f;
+            }
+        }
+
+        private void CleanupStraySceneSoldiers()
+        {
+            EnemySoldierTarget[] sceneSoldiers = FindObjectsByType<EnemySoldierTarget>(FindObjectsInactive.Include);
+            for (int i = 0; i < sceneSoldiers.Length; i++)
+            {
+                if (sceneSoldiers[i] != null && !sceneSoldiers[i].transform.IsChildOf(transform))
+                {
+                    Destroy(sceneSoldiers[i].gameObject);
+                }
             }
         }
 
@@ -177,6 +200,8 @@ namespace VRAtis.Targets
 
         public void SetTargetKind(TargetKind kind)
         {
+            _activeDrillPreset = null;
+            _activePresetSoldierCount = 0;
             if (activeTargetKind == kind)
             {
                 if (isCustomDrillActive)
@@ -197,6 +222,8 @@ namespace VRAtis.Targets
 
         public void SetTargetCount(int count)
         {
+            _activeDrillPreset = null;
+            _activePresetSoldierCount = 0;
             targetCount = Mathf.Clamp(count, MinTargetCount, MaxTargetCount);
             isCustomDrillActive = true;
             ApplyCustomDrillLayout();
@@ -205,6 +232,8 @@ namespace VRAtis.Targets
 
         public void SetDistanceMeters(float meters)
         {
+            _activeDrillPreset = null;
+            _activePresetSoldierCount = 0;
             distanceMeters = Mathf.Clamp(Mathf.Round(meters), MinDistanceMeters, MaxDistanceMeters);
             if (targetCount == 0 && !isCustomDrillActive)
                 targetCount = 1;
@@ -220,6 +249,8 @@ namespace VRAtis.Targets
 
         public void SetSpacingMeters(float meters)
         {
+            _activeDrillPreset = null;
+            _activePresetSoldierCount = 0;
             spacingMeters = Mathf.Clamp(Mathf.Round(meters), MinSpacingMeters, MaxSpacingMeters);
             if (targetCount == 0 && !isCustomDrillActive)
                 targetCount = 1;
@@ -235,9 +266,110 @@ namespace VRAtis.Targets
 
         public void ActivateClassicRange()
         {
+            _activeDrillPreset = null;
+            _activePresetSoldierCount = 0;
             isCustomDrillActive = false;
             ApplyClassicRangeLayout();
             OnDrillConfigChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Immediately arranges multi-depth, staggered tactical shooting drill targets
+        /// (Z-Drill, X-Drill, Mozambique, Box Drill, Bill Drill, 1-5 Drill, El Presidente, etc.)
+        /// on the range using the prewarmed zero-GC pools.
+        /// </summary>
+        public void ApplyTacticalDrillPreset(TacticalDrillDefinition def)
+        {
+            if (def == null || def.Targets == null || def.Targets.Length == 0)
+                return;
+
+            _activeDrillPreset = def;
+            _soldierWaveRespawnTimer = -1f;
+            isCustomDrillActive = true;
+
+            SetListActive(_classicGongTargets, false);
+            SetListActive(_classicSilhouetteTargets, false);
+            SetSoldierListActive(_classicSoldierTargets, false);
+            SetListActive(_gongDrillPool, false);
+            SetListActive(_silhouetteDrillPool, false);
+            SetSoldierListActive(_soldierDrillPool, false);
+
+            int needGong = 0;
+            int needSil = 0;
+            int needSol = 0;
+            for (int i = 0; i < def.Targets.Length; i++)
+            {
+                TargetKind k = ResolveAvailableKind(def.Targets[i].Kind);
+                if (k == TargetKind.MovingEnemySoldier) needSol++;
+                else if (k == TargetKind.MetalHumanSilhouette) needSil++;
+                else needGong++;
+            }
+
+            if (needGong > 0) EnsurePoolCount(TargetKind.SteelGong, needGong);
+            if (needSil > 0) EnsurePoolCount(TargetKind.MetalHumanSilhouette, needSil);
+            if (needSol > 0) EnsureSoldierPoolCount(needSol);
+
+            _activePresetSoldierCount = needSol;
+            activeTargetKind = needSol > 0
+                ? TargetKind.MovingEnemySoldier
+                : (needSil > 0 ? TargetKind.MetalHumanSilhouette : TargetKind.SteelGong);
+            targetCount = Mathf.Clamp(def.Targets.Length, 1, MaxTargetCount);
+            distanceMeters = def.Targets[0].DistanceMeters;
+
+            int gongIdx = 0;
+            int silIdx = 0;
+            int solIdx = 0;
+
+            for (int i = 0; i < def.Targets.Length; i++)
+            {
+                TargetPlacementSpec spec = def.Targets[i];
+                TargetKind resolved = ResolveAvailableKind(spec.Kind);
+                Vector3 pos = _originWorldPos + _rangeForward * spec.DistanceMeters + _rangeRight * spec.LateralOffsetMeters;
+                pos.y = 0f;
+
+                if (resolved == TargetKind.MovingEnemySoldier)
+                {
+                    if (solIdx >= _soldierDrillPool.Count) continue;
+                    EnemySoldierTarget sol = _soldierDrillPool[solIdx++];
+                    if (sol == null) continue;
+                    sol.gameObject.name = $"{def.Id}_Soldier_{solIdx}_{spec.DistanceMeters:F0}m";
+                    sol.transform.position = pos;
+                    sol.transform.localScale = Vector3.one * ComputeSoldierScaleForDistance(spec.DistanceMeters);
+                    sol.gameObject.SetActive(true);
+                    float halfW = Mathf.Clamp(spec.PatrolHalfWidthMeters, 1.0f, 12.0f);
+                    float depthJit = Mathf.Clamp(halfW * 0.25f, 0.35f, 2.0f);
+                    sol.ConfigurePatrolZone(pos, _originWorldPos, _rangeForward, _rangeRight, halfW, depthJit, spec.AssaultMode);
+                }
+                else
+                {
+                    List<SteelGongTarget> pool = GetPoolForKind(resolved);
+                    int idx = resolved == TargetKind.MetalHumanSilhouette ? silIdx++ : gongIdx++;
+                    if (idx >= pool.Count) continue;
+                    SteelGongTarget tgt = pool[idx];
+                    if (tgt == null) continue;
+                    tgt.gameObject.name = $"{def.Id}_Target_{i + 1}_{spec.DistanceMeters:F0}m";
+                    tgt.transform.position = pos;
+                    tgt.transform.localScale = Vector3.one * ComputeTargetScaleForDistance(spec.DistanceMeters);
+                    Vector3 away = pos - _originWorldPos;
+                    away.y = 0f;
+                    if (away.sqrMagnitude > 1e-4f)
+                        tgt.transform.rotation = Quaternion.LookRotation(away.normalized, Vector3.up);
+                    tgt.gameObject.SetActive(true);
+                    tgt.ResetVisualState();
+                }
+            }
+
+            Debug.Log($"[Poligon Dril] '{def.Title}' kuruldu ({def.Targets.Length} hedef).");
+            OnDrillConfigChanged?.Invoke();
+        }
+
+        private TargetKind ResolveAvailableKind(TargetKind requested)
+        {
+            if (requested == TargetKind.MovingEnemySoldier && enemySoldierPrefab != null)
+                return TargetKind.MovingEnemySoldier;
+            if (requested == TargetKind.MetalHumanSilhouette && metalSilhouettePrefab != null)
+                return TargetKind.MetalHumanSilhouette;
+            return TargetKind.SteelGong;
         }
 
         public void SetSoldierAssaultMode(bool assaultEnabled)
@@ -256,6 +388,12 @@ namespace VRAtis.Targets
         public void ClearAllImpactMarksAndSwings()
         {
             _soldierWaveRespawnTimer = -1f;
+
+            if (_activeDrillPreset != null)
+            {
+                ApplyTacticalDrillPreset(_activeDrillPreset);
+                return;
+            }
 
             if (activeTargetKind == TargetKind.MovingEnemySoldier)
             {

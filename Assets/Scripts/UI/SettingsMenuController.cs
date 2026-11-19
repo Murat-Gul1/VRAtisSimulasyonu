@@ -96,6 +96,19 @@ namespace VRAtis.UI
             public Image TargetClassicRangeBg;
             public Button TargetClearMarksButton;
             public Text TargetClearMarksLabel;
+            public GameObject DrillPresetsPage;
+            public Button OpenDrillsButton;
+            public Button DrillsBackButton;
+            public Text DrillsSummaryText;
+            public Button[] DrillPresetButtons;
+            public Image[] DrillPresetBg;
+            public GameObject DrillBriefingRoot;
+            public RectTransform DrillBriefingRect;
+            public CanvasGroup DrillBriefingCanvasGroup;
+            public Text DrillBriefingTitleText;
+            public Text DrillBriefingStepText;
+            public Text DrillBriefingBodyText;
+            public RectTransform DrillBriefingProgressFillRect;
             public GameObject CalibrationBannerRoot;
             public RectTransform CalibrationBannerRect;
             public Image CalibrationAccentBar;
@@ -116,6 +129,7 @@ namespace VRAtis.UI
         private static readonly int[] TargetDistancePresets = { 20, 25, 50, 100, 200 };
         private static readonly int[] TargetSpacingPresets = { 1, 3, 5, 10, 20, 30 };
         private static readonly Color ActiveChipColor = new Color(0.24f, 0.72f, 0.56f, 0.96f);
+        private static readonly Color ActiveDrillCardColor = new Color(0.14f, 0.36f, 0.30f, 0.98f);
         private static readonly Color ActiveAssaultColor = new Color(0.84f, 0.26f, 0.22f, 0.98f);
         private static readonly Color InactiveChipColor = new Color(0.11f, 0.16f, 0.22f, 0.92f);
 
@@ -141,6 +155,17 @@ namespace VRAtis.UI
         private bool _lastBannerCameraRunning;
         private bool _lastBannerWaitingPerm;
         private bool _lastBannerHiddenByMenu = true;
+
+        // Sequential timed tactical drill briefing engine
+        private TacticalDrillDefinition _briefingDrill;
+        private readonly List<string> _briefingChunks = new List<string>(8);
+        private int _briefingChunkIndex = -1;
+        private float _briefingChunkElapsed;
+        private float _briefingChunkDuration = 4.0f;
+        private bool _briefingActive;
+        private bool _briefingVisibleOnViews;
+        private const float BriefingFadeInSeconds = 0.24f;
+        private const float BriefingFadeOutSeconds = 0.28f;
 
         public event Action<bool, bool> OnWeatherTogglesChanged;
 
@@ -170,6 +195,7 @@ namespace VRAtis.UI
                 return;
 
             EnsureCalibrationBannerExists(primaryEyeRoot);
+            EnsureDrillBriefingBannerExists(primaryEyeRoot);
 
             _primaryView = ResolveAndBindView(primaryEyeRoot);
             _views.Add(_primaryView);
@@ -200,6 +226,7 @@ namespace VRAtis.UI
             SyncTargetWidgetsToViews();
             ApplyStereoLayoutIfNeeded(force: true);
             SyncCalibrationBannerToViews();
+            StopDrillBriefing();
         }
 
         private void Update()
@@ -226,6 +253,7 @@ namespace VRAtis.UI
             }
 
             SyncCalibrationBannerToViews();
+            UpdateDrillBriefing(Time.unscaledDeltaTime);
         }
 
         private void LateUpdate()
@@ -252,20 +280,20 @@ namespace VRAtis.UI
 
         public void ShowMainCategoryPage()
         {
-            SetCategoryPageActive(showMain: true, showWeather: false, showOptical: false, showTargetTypes: false, showTargets: false);
+            SetCategoryPageActive(showMain: true, showWeather: false, showOptical: false, showTargetTypes: false, showTargets: false, showDrills: false);
             SyncVrWidgetsToViews();
         }
 
         public void ShowWeatherCategoryPage()
         {
-            SetCategoryPageActive(showMain: false, showWeather: true, showOptical: false, showTargetTypes: false, showTargets: false);
+            SetCategoryPageActive(showMain: false, showWeather: true, showOptical: false, showTargetTypes: false, showTargets: false, showDrills: false);
             SyncWeatherTogglesToViews();
             SyncTimeWidgetsFromScene();
         }
 
         public void ShowOpticalCategoryPage()
         {
-            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: true, showTargetTypes: false, showTargets: false);
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: true, showTargetTypes: false, showTargets: false, showDrills: false);
             _nextOpticalUiRefreshTime = 0f;
             SyncOpticalWidgetsToViews();
         }
@@ -280,25 +308,38 @@ namespace VRAtis.UI
                 return;
             }
 
-            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargetTypes: true, showTargets: false);
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargetTypes: true, showTargets: false, showDrills: false);
             SyncTargetWidgetsToViews();
         }
 
         public void ShowTargetCategoryPage()
         {
-            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargetTypes: false, showTargets: true);
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargetTypes: false, showTargets: true, showDrills: false);
+            SyncTargetWidgetsToViews();
+        }
+
+        public void ShowDrillPresetsPage()
+        {
+            if (_primaryView == null || _primaryView.DrillPresetsPage == null)
+            {
+                ShowTargetTypeMenuPage();
+                return;
+            }
+
+            SetCategoryPageActive(showMain: false, showWeather: false, showOptical: false, showTargetTypes: false, showTargets: false, showDrills: true);
             SyncTargetWidgetsToViews();
         }
 
         private void OpenTargetDrillForKind(TargetKind kind)
         {
+            StopDrillBriefing();
             TargetRangeManager mgr = ResolveTargetRangeManager();
             if (mgr != null)
                 mgr.SetTargetKind(kind);
             ShowTargetCategoryPage();
         }
 
-        private void SetCategoryPageActive(bool showMain, bool showWeather, bool showOptical, bool showTargetTypes, bool showTargets)
+        private void SetCategoryPageActive(bool showMain, bool showWeather, bool showOptical, bool showTargetTypes, bool showTargets, bool showDrills)
         {
             for (int i = 0; i < _views.Count; i++)
             {
@@ -312,6 +353,8 @@ namespace VRAtis.UI
                     _views[i].TargetTypeMenuPage.SetActive(showTargetTypes);
                 if (_views[i].TargetCategoryPage != null)
                     _views[i].TargetCategoryPage.SetActive(showTargets);
+                if (_views[i].DrillPresetsPage != null)
+                    _views[i].DrillPresetsPage.SetActive(showDrills);
             }
 
             RefreshOpticalPreviewActiveState();
@@ -333,12 +376,14 @@ namespace VRAtis.UI
             Transform gearTr = root.Find("BottomRight_SettingsButton");
             Transform winTr = root.Find("SettingsWindow");
             Transform calTr = root.Find("OpticalCalibrationBanner");
+            Transform briefTr = root.Find("DrillBriefingBanner");
             Transform contentTr = winTr != null ? winTr.Find("ContentArea") : null;
             Transform mainTr = contentTr != null ? contentTr.Find("MainCategoryPage") : null;
             Transform weatherTr = contentTr != null ? contentTr.Find("WeatherCategoryPage") : null;
             Transform opticalTr = contentTr != null ? contentTr.Find("OpticalCategoryPage") : null;
             Transform targetTypeTr = contentTr != null ? contentTr.Find("TargetTypeMenuPage") : null;
             Transform targetTr = contentTr != null ? contentTr.Find("TargetCategoryPage") : null;
+            Transform drillsTr = contentTr != null ? contentTr.Find("DrillPresetsPage") : null;
             Transform vrCardTr = mainTr != null ? mainTr.Find("VRCalibrationCard") : null;
 
             UiView view = new UiView
@@ -362,6 +407,10 @@ namespace VRAtis.UI
                 OpenSoldierTargetButton = FindChildComponent<Button>(targetTypeTr, "SoldierTargetMenuButton"),
                 OpenSoldierTargetBg = FindChildComponent<Image>(targetTypeTr, "SoldierTargetMenuButton"),
                 TargetCategoryPage = targetTr != null ? targetTr.gameObject : null,
+                DrillPresetsPage = drillsTr != null ? drillsTr.gameObject : null,
+                OpenDrillsButton = FindChildComponent<Button>(mainTr, "DrillsMenuButton"),
+                DrillsBackButton = FindChildComponent<Button>(drillsTr, "DrillsSubHeader/BackButton"),
+                DrillsSummaryText = FindChildComponent<Text>(drillsTr, "DrillsSummaryBox/DrillsSummaryText"),
                 OpenWeatherButton = FindChildComponent<Button>(mainTr, "WeatherMenuButton"),
                 OpenOpticalButton = FindChildComponent<Button>(mainTr, "OpticalMenuButton"),
                 OpenTargetsButton = FindChildComponent<Button>(mainTr, "TargetsMenuButton"),
@@ -377,7 +426,7 @@ namespace VRAtis.UI
                 TargetDistMinusButton = FindChildComponent<Button>(targetTr, "TargetDistStepRow/DistMinusButton"),
                 TargetDistValueText = FindChildComponent<Text>(targetTr, "TargetDistStepRow/ValueBox/DistValueText"),
                 TargetDistPlusButton = FindChildComponent<Button>(targetTr, "TargetDistStepRow/DistPlusButton"),
-                TargetSpacingHeaderText = FindChildComponent<Text>(targetTr, "TargetSpacingHeader"),
+                TargetSpacingHeaderText = FindChildComponent<Text>(targetTr, "TargetSpacingHeader/Text") ?? FindChildComponent<Text>(targetTr, "TargetSpacingHeader"),
                 TargetSpacingButtons = new Button[TargetSpacingPresets.Length],
                 TargetSpacingBg = new Image[TargetSpacingPresets.Length],
                 TargetSpacingMinusButton = FindChildComponent<Button>(targetTr, "TargetSpacingStepRow/SpacingMinusButton"),
@@ -416,6 +465,13 @@ namespace VRAtis.UI
                 OpticDomMinusButton = FindChildComponent<Button>(opticalTr, "OpticDomRow/DomMinusButton"),
                 OpticDomValueText = FindChildComponent<Text>(opticalTr, "OpticDomRow/ValueBox/DomValueText"),
                 OpticDomPlusButton = FindChildComponent<Button>(opticalTr, "OpticDomRow/DomPlusButton"),
+                DrillBriefingRoot = briefTr != null ? briefTr.gameObject : null,
+                DrillBriefingRect = briefTr as RectTransform,
+                DrillBriefingCanvasGroup = briefTr != null ? briefTr.GetComponent<CanvasGroup>() : null,
+                DrillBriefingTitleText = FindChildComponent<Text>(briefTr, "BriefingTitleText"),
+                DrillBriefingStepText = FindChildComponent<Text>(briefTr, "BriefingStepText"),
+                DrillBriefingBodyText = FindChildComponent<Text>(briefTr, "BriefingBodyText"),
+                DrillBriefingProgressFillRect = FindChildComponent<RectTransform>(briefTr, "ProgressTrack/ProgressFill"),
                 CalibrationBannerRoot = calTr != null ? calTr.gameObject : null,
                 CalibrationBannerRect = calTr as RectTransform,
                 CalibrationAccentBar = FindChildComponent<Image>(calTr, "AccentBar"),
@@ -450,6 +506,17 @@ namespace VRAtis.UI
                 view.TargetSpacingBg[i] = FindChildComponent<Image>(targetTr, path);
             }
 
+            TacticalDrillDefinition[] allDrills = TacticalDrillCatalog.AllDrills;
+            view.DrillPresetButtons = new Button[allDrills.Length];
+            view.DrillPresetBg = new Image[allDrills.Length];
+            for (int i = 0; i < allDrills.Length; i++)
+            {
+                int rowNum = (i / 2) + 1;
+                string path = $"DrillRow_{rowNum}/{allDrills[i].ButtonId}";
+                view.DrillPresetButtons[i] = FindChildComponent<Button>(drillsTr, path);
+                view.DrillPresetBg[i] = FindChildComponent<Image>(drillsTr, path);
+            }
+
             BindViewListeners(view);
             return view;
         }
@@ -457,6 +524,8 @@ namespace VRAtis.UI
         private void BindViewListeners(UiView view)
         {
             BindClick(view.GearButton, ToggleWindow);
+            BindClick(view.OpenDrillsButton, ShowDrillPresetsPage);
+            BindClick(view.DrillsBackButton, ShowMainCategoryPage);
             BindClick(view.OpenWeatherButton, ShowWeatherCategoryPage);
             BindClick(view.OpenOpticalButton, ShowOpticalCategoryPage);
             BindClick(view.OpenTargetsButton, ShowTargetTypeMenuPage);
@@ -468,6 +537,17 @@ namespace VRAtis.UI
             BindClick(view.OpenSoldierTargetButton, () => OpenTargetDrillForKind(TargetKind.MovingEnemySoldier));
             BindClick(view.TargetBackButton, view.TargetTypeMenuPage != null ? (Action)ShowTargetTypeMenuPage : ShowMainCategoryPage);
             BindClick(view.CloseWindowButton, CloseWindow);
+
+            TacticalDrillDefinition[] allDrills = TacticalDrillCatalog.AllDrills;
+            if (view.DrillPresetButtons != null)
+            {
+                int count = Mathf.Min(view.DrillPresetButtons.Length, allDrills.Length);
+                for (int i = 0; i < count; i++)
+                {
+                    TacticalDrillDefinition capturedDef = allDrills[i];
+                    BindClick(view.DrillPresetButtons[i], () => HandleTacticalDrillSelected(capturedDef));
+                }
+            }
             BindClick(view.OpticZeroButton, HandleOpticZero);
             BindClick(view.OpticModeButton, CycleOpticMode);
             BindClick(view.OpticAxisButton, CycleOpticAxis);
@@ -613,8 +693,8 @@ namespace VRAtis.UI
                 view.GearRect.anchorMin = new Vector2(1f, 0f);
                 view.GearRect.anchorMax = new Vector2(1f, 0f);
                 view.GearRect.pivot = new Vector2(1f, 0f);
-                view.GearRect.sizeDelta = isSplit ? new Vector2(50f, 50f) : new Vector2(64f, 64f);
-                view.GearRect.anchoredPosition = isSplit ? new Vector2(-120f, 96f) : new Vector2(-28f, 28f);
+                view.GearRect.sizeDelta = isSplit ? new Vector2(56f, 56f) : new Vector2(76f, 76f);
+                view.GearRect.anchoredPosition = isSplit ? new Vector2(-110f, 92f) : new Vector2(-28f, 28f);
             }
 
             if (view.GearBackground != null)
@@ -624,25 +704,41 @@ namespace VRAtis.UI
                 view.GearBackground.color = c;
             }
 
+            // Full-screen Settings Window for crisp readability on both desktop/mobile and VR split-screen
             if (view.WindowRect != null)
             {
+                view.WindowRect.pivot = new Vector2(0.5f, 0.5f);
                 if (isSplit)
                 {
-                    view.WindowRect.anchorMin = new Vector2(0.5f, 0.5f);
-                    view.WindowRect.anchorMax = new Vector2(0.5f, 0.5f);
-                    view.WindowRect.pivot = new Vector2(0.5f, 0.5f);
-                    view.WindowRect.anchoredPosition = Vector2.zero;
-                    view.WindowRect.sizeDelta = new Vector2(430f, 600f);
-                    view.WindowRect.localScale = new Vector3(0.80f, 0.80f, 1f);
+                    view.WindowRect.anchorMin = new Vector2(0.04f, 0.05f);
+                    view.WindowRect.anchorMax = new Vector2(0.96f, 0.95f);
                 }
                 else
                 {
-                    view.WindowRect.anchorMin = new Vector2(1f, 0f);
-                    view.WindowRect.anchorMax = new Vector2(1f, 0f);
-                    view.WindowRect.pivot = new Vector2(1f, 0f);
-                    view.WindowRect.anchoredPosition = new Vector2(-28f, 104f);
-                    view.WindowRect.sizeDelta = new Vector2(430f, 600f);
-                    view.WindowRect.localScale = Vector3.one;
+                    view.WindowRect.anchorMin = new Vector2(0.03f, 0.04f);
+                    view.WindowRect.anchorMax = new Vector2(0.97f, 0.96f);
+                }
+                view.WindowRect.offsetMin = Vector2.zero;
+                view.WindowRect.offsetMax = Vector2.zero;
+                view.WindowRect.localScale = Vector3.one;
+            }
+
+            if (view.DrillBriefingRect != null)
+            {
+                view.DrillBriefingRect.anchorMin = new Vector2(0.5f, 1f);
+                view.DrillBriefingRect.anchorMax = new Vector2(0.5f, 1f);
+                view.DrillBriefingRect.pivot = new Vector2(0.5f, 1f);
+                if (isSplit)
+                {
+                    view.DrillBriefingRect.anchoredPosition = new Vector2(0f, -110f);
+                    view.DrillBriefingRect.sizeDelta = new Vector2(640f, 210f);
+                    view.DrillBriefingRect.localScale = new Vector3(0.90f, 0.90f, 1f);
+                }
+                else
+                {
+                    view.DrillBriefingRect.anchoredPosition = new Vector2(0f, -38f);
+                    view.DrillBriefingRect.sizeDelta = new Vector2(960f, 186f);
+                    view.DrillBriefingRect.localScale = Vector3.one;
                 }
             }
 
@@ -822,8 +918,25 @@ namespace VRAtis.UI
             return targetRangeManager;
         }
 
+        private void HandleTacticalDrillSelected(TacticalDrillDefinition def)
+        {
+            if (def == null)
+                return;
+
+            TargetRangeManager mgr = ResolveTargetRangeManager();
+            if (mgr != null)
+                mgr.ApplyTacticalDrillPreset(def);
+
+            SyncTargetWidgetsToViews();
+            CloseWindow();
+            // Always replay the sequential instructional briefing from sentence 1,
+            // even if the user picks the same drill again in the same session.
+            StartDrillBriefing(def);
+        }
+
         private void HandleTargetCountSelected(int count)
         {
+            StopDrillBriefing();
             TargetRangeManager mgr = ResolveTargetRangeManager();
             if (mgr != null)
                 mgr.SetTargetCount(count);
@@ -832,6 +945,7 @@ namespace VRAtis.UI
 
         private void HandleTargetDistanceSelected(float meters)
         {
+            StopDrillBriefing();
             TargetRangeManager mgr = ResolveTargetRangeManager();
             if (mgr != null)
                 mgr.SetDistanceMeters(meters);
@@ -840,6 +954,7 @@ namespace VRAtis.UI
 
         private void NudgeTargetDistance(float deltaMeters)
         {
+            StopDrillBriefing();
             TargetRangeManager mgr = ResolveTargetRangeManager();
             if (mgr != null)
                 mgr.NudgeDistanceMeters(deltaMeters);
@@ -848,6 +963,7 @@ namespace VRAtis.UI
 
         private void HandleTargetSpacingSelected(float meters)
         {
+            StopDrillBriefing();
             TargetRangeManager mgr = ResolveTargetRangeManager();
             if (mgr != null)
                 mgr.SetSpacingMeters(meters);
@@ -856,6 +972,7 @@ namespace VRAtis.UI
 
         private void NudgeTargetSpacing(float deltaMeters)
         {
+            StopDrillBriefing();
             TargetRangeManager mgr = ResolveTargetRangeManager();
             if (mgr != null)
                 mgr.NudgeSpacingMeters(deltaMeters);
@@ -864,6 +981,7 @@ namespace VRAtis.UI
 
         private void HandleClassicRangeSelected()
         {
+            StopDrillBriefing();
             TargetRangeManager mgr = ResolveTargetRangeManager();
             if (mgr != null)
                 mgr.ActivateClassicRange();
@@ -888,6 +1006,8 @@ namespace VRAtis.UI
         private void SyncTargetWidgetsToViews()
         {
             TargetRangeManager mgr = ResolveTargetRangeManager();
+            TacticalDrillDefinition activeDrill = mgr != null ? mgr.ActiveDrillPreset : null;
+            bool isPresetDrill = activeDrill != null;
             TargetKind kind = mgr != null ? mgr.ActiveTargetKind : TargetKind.SteelGong;
             bool isSilhouette = kind == TargetKind.MetalHumanSilhouette;
             bool isSoldier = kind == TargetKind.MovingEnemySoldier;
@@ -907,6 +1027,8 @@ namespace VRAtis.UI
             string summary;
             if (mgr == null)
                 summary = "TargetRangeManager bulunamadı";
+            else if (isPresetDrill)
+                summary = $"Aktif Dril: {activeDrill.SummaryTag}";
             else if (!customActive)
                 summary = isSoldier
                     ? $"{kindLabel}  •  Çoklu Mesafe (25-250 m)"
@@ -920,21 +1042,42 @@ namespace VRAtis.UI
             else
                 summary = $"{kindLabel}  •  {count} Hedef  •  {distInt} m  •  {spacingInt} m";
 
+            string drillsSummary = isPresetDrill
+                ? $"Aktif: {activeDrill.SummaryTag}  •  Tekrar seçerseniz anlatım baştan başlar"
+                : "Bir atış tekniği seçin: hedefler dizilir ve anlatım başlar";
+
             Color activeCardTint = new Color(0.14f, 0.30f, 0.26f, 0.96f);
+            TacticalDrillDefinition[] allDrills = TacticalDrillCatalog.AllDrills;
 
             for (int v = 0; v < _views.Count; v++)
             {
                 UiView view = _views[v];
+                if (view.DrillsSummaryText != null)
+                    view.DrillsSummaryText.text = drillsSummary;
+
+                if (view.DrillPresetBg != null)
+                {
+                    int drillCount = Mathf.Min(view.DrillPresetBg.Length, allDrills.Length);
+                    for (int i = 0; i < drillCount; i++)
+                    {
+                        if (view.DrillPresetBg[i] != null)
+                        {
+                            bool isThisActive = isPresetDrill && activeDrill.Id == allDrills[i].Id;
+                            view.DrillPresetBg[i].color = isThisActive ? ActiveDrillCardColor : InactiveChipColor;
+                        }
+                    }
+                }
+
                 if (view.TargetTypeSummaryText != null)
                     view.TargetTypeSummaryText.text = summary;
                 if (view.TargetPageSubTitleText != null)
                     view.TargetPageSubTitleText.text = subTitleUpper;
                 if (view.OpenGongTargetBg != null)
-                    view.OpenGongTargetBg.color = (!isSilhouette && !isSoldier) ? activeCardTint : InactiveChipColor;
+                    view.OpenGongTargetBg.color = (!isPresetDrill && !isSilhouette && !isSoldier) ? activeCardTint : InactiveChipColor;
                 if (view.OpenHumanMetalTargetBg != null)
-                    view.OpenHumanMetalTargetBg.color = isSilhouette ? activeCardTint : InactiveChipColor;
+                    view.OpenHumanMetalTargetBg.color = (!isPresetDrill && isSilhouette) ? activeCardTint : InactiveChipColor;
                 if (view.OpenSoldierTargetBg != null)
-                    view.OpenSoldierTargetBg.color = isSoldier ? activeCardTint : InactiveChipColor;
+                    view.OpenSoldierTargetBg.color = (!isPresetDrill && isSoldier) ? activeCardTint : InactiveChipColor;
 
                 if (view.TargetSummaryText != null)
                     view.TargetSummaryText.text = summary;
@@ -953,7 +1096,7 @@ namespace VRAtis.UI
                         : $"{spacingInt} m aralık";
                 }
                 if (view.TargetClearMarksLabel != null)
-                    view.TargetClearMarksLabel.text = isSoldier ? "Askerleri Yenile" : "İzleri Sıfırla";
+                    view.TargetClearMarksLabel.text = isSoldier ? "Askerleri Yenile" : "Hedefleri Sıfırla";
 
                 if (view.SoldierModeSection != null)
                     view.SoldierModeSection.SetActive(isSoldier);
@@ -965,23 +1108,23 @@ namespace VRAtis.UI
                 for (int i = 0; i < TargetCountPresets.Length; i++)
                 {
                     if (view.TargetCountBg != null && view.TargetCountBg[i] != null)
-                        view.TargetCountBg[i].color = (customActive && count == TargetCountPresets[i]) ? ActiveChipColor : InactiveChipColor;
+                        view.TargetCountBg[i].color = (!isPresetDrill && customActive && count == TargetCountPresets[i]) ? ActiveChipColor : InactiveChipColor;
                 }
 
                 for (int i = 0; i < TargetDistancePresets.Length; i++)
                 {
                     if (view.TargetDistBg != null && view.TargetDistBg[i] != null)
-                        view.TargetDistBg[i].color = (customActive && distInt == TargetDistancePresets[i]) ? ActiveChipColor : InactiveChipColor;
+                        view.TargetDistBg[i].color = (!isPresetDrill && customActive && distInt == TargetDistancePresets[i]) ? ActiveChipColor : InactiveChipColor;
                 }
 
                 for (int i = 0; i < TargetSpacingPresets.Length; i++)
                 {
                     if (view.TargetSpacingBg != null && view.TargetSpacingBg[i] != null)
-                        view.TargetSpacingBg[i].color = (customActive && spacingInt == TargetSpacingPresets[i]) ? ActiveChipColor : InactiveChipColor;
+                        view.TargetSpacingBg[i].color = (!isPresetDrill && customActive && spacingInt == TargetSpacingPresets[i]) ? ActiveChipColor : InactiveChipColor;
                 }
 
                 if (view.TargetClassicRangeBg != null)
-                    view.TargetClassicRangeBg.color = !customActive ? ActiveChipColor : InactiveChipColor;
+                    view.TargetClassicRangeBg.color = (!isPresetDrill && !customActive) ? ActiveChipColor : InactiveChipColor;
             }
         }
 
@@ -1374,6 +1517,252 @@ namespace VRAtis.UI
                 if (view.CalibrationDetailText != null)
                     view.CalibrationDetailText.text = detail;
             }
+        }
+
+        private void StartDrillBriefing(TacticalDrillDefinition def)
+        {
+            _briefingChunks.Clear();
+            if (def == null)
+            {
+                StopDrillBriefing();
+                return;
+            }
+
+            List<string> expanded = TacticalDrillCatalog.ExpandIntoReadableChunks(def.BriefingSteps, maxCharsPerChunk: 120);
+            if (expanded.Count == 0)
+            {
+                StopDrillBriefing();
+                return;
+            }
+
+            _briefingDrill = def;
+            _briefingChunks.AddRange(expanded);
+            _briefingChunkIndex = 0;
+            _briefingChunkElapsed = 0f;
+            _briefingChunkDuration = TacticalDrillCatalog.ComputeReadingDurationSeconds(_briefingChunks[0]);
+            _briefingActive = true;
+
+            PushCurrentBriefingChunkToViews();
+            SetDrillBriefingVisibleOnViews(!IsMenuOpen, 0f, 1f);
+        }
+
+        private void StopDrillBriefing()
+        {
+            _briefingActive = false;
+            _briefingDrill = null;
+            _briefingChunks.Clear();
+            _briefingChunkIndex = -1;
+            _briefingChunkElapsed = 0f;
+            SetDrillBriefingVisibleOnViews(false, 0f, 0f);
+        }
+
+        private void UpdateDrillBriefing(float dt)
+        {
+            if (!_briefingActive || _briefingChunkIndex < 0 || _briefingChunkIndex >= _briefingChunks.Count)
+            {
+                if (_briefingVisibleOnViews)
+                    SetDrillBriefingVisibleOnViews(false, 0f, 0f);
+                return;
+            }
+
+            // Pause and hide cleanly if Settings menu or optical calibration banner is active
+            if (IsMenuOpen || !_lastBannerHiddenByMenu)
+            {
+                if (_briefingVisibleOnViews)
+                    SetDrillBriefingVisibleOnViews(false, 0f, 1f);
+                return;
+            }
+
+            _briefingChunkElapsed += Mathf.Clamp(dt, 0f, 0.10f);
+
+            if (_briefingChunkElapsed >= _briefingChunkDuration)
+            {
+                _briefingChunkIndex++;
+                if (_briefingChunkIndex >= _briefingChunks.Count)
+                {
+                    StopDrillBriefing();
+                    return;
+                }
+
+                _briefingChunkElapsed = 0f;
+                _briefingChunkDuration = TacticalDrillCatalog.ComputeReadingDurationSeconds(_briefingChunks[_briefingChunkIndex]);
+                PushCurrentBriefingChunkToViews();
+            }
+
+            float duration = Mathf.Max(0.5f, _briefingChunkDuration);
+            float alpha = 1f;
+            if (_briefingChunkElapsed < BriefingFadeInSeconds)
+            {
+                alpha = Mathf.Clamp01(_briefingChunkElapsed / BriefingFadeInSeconds);
+            }
+            else if (_briefingChunkElapsed > duration - BriefingFadeOutSeconds)
+            {
+                float rem = duration - _briefingChunkElapsed;
+                alpha = Mathf.Clamp01(rem / BriefingFadeOutSeconds);
+            }
+
+            float remainingProgress = 1f - Mathf.Clamp01(_briefingChunkElapsed / duration);
+            SetDrillBriefingVisibleOnViews(true, alpha, remainingProgress);
+        }
+
+        private void PushCurrentBriefingChunkToViews()
+        {
+            if (_briefingDrill == null || _briefingChunkIndex < 0 || _briefingChunkIndex >= _briefingChunks.Count)
+                return;
+
+            string title = _briefingDrill.Title;
+            string step = $"{_briefingChunkIndex + 1} / {_briefingChunks.Count}";
+            string body = _briefingChunks[_briefingChunkIndex];
+
+            for (int i = 0; i < _views.Count; i++)
+            {
+                UiView view = _views[i];
+                if (view.DrillBriefingTitleText != null)
+                    view.DrillBriefingTitleText.text = title;
+                if (view.DrillBriefingStepText != null)
+                    view.DrillBriefingStepText.text = step;
+                if (view.DrillBriefingBodyText != null)
+                    view.DrillBriefingBodyText.text = body;
+            }
+        }
+
+        private void SetDrillBriefingVisibleOnViews(bool visible, float alpha, float progress01)
+        {
+            _briefingVisibleOnViews = visible;
+            for (int i = 0; i < _views.Count; i++)
+            {
+                UiView view = _views[i];
+                if (view.DrillBriefingRoot != null && view.DrillBriefingRoot.activeSelf != visible)
+                    view.DrillBriefingRoot.SetActive(visible);
+                if (view.DrillBriefingCanvasGroup != null)
+                    view.DrillBriefingCanvasGroup.alpha = alpha;
+                if (view.DrillBriefingProgressFillRect != null)
+                    view.DrillBriefingProgressFillRect.anchorMax = new Vector2(Mathf.Clamp01(progress01), 1f);
+            }
+        }
+
+        private static void EnsureDrillBriefingBannerExists(RectTransform eyeRoot)
+        {
+            if (eyeRoot == null || eyeRoot.Find("DrillBriefingBanner") != null)
+                return;
+
+            Font font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            Image gearImg = FindChildComponent<Image>(eyeRoot, "BottomRight_SettingsButton");
+            Sprite panelSprite = gearImg != null ? gearImg.sprite : null;
+            Color accentColor = new Color(0.24f, 0.76f, 0.58f, 1.0f);
+
+            GameObject bannerGo = new GameObject("DrillBriefingBanner");
+            bannerGo.transform.SetParent(eyeRoot, false);
+            RectTransform rt = bannerGo.AddComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.5f, 1f);
+            rt.anchorMax = new Vector2(0.5f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.anchoredPosition = new Vector2(0f, -38f);
+            rt.sizeDelta = new Vector2(960f, 186f);
+
+            Image bgImg = bannerGo.AddComponent<Image>();
+            bgImg.sprite = panelSprite;
+            bgImg.type = panelSprite != null ? Image.Type.Sliced : Image.Type.Simple;
+            bgImg.color = new Color(0.04f, 0.08f, 0.13f, 0.92f);
+            bgImg.raycastTarget = false;
+
+            CanvasGroup cg = bannerGo.AddComponent<CanvasGroup>();
+            cg.alpha = 0f;
+            cg.interactable = false;
+            cg.blocksRaycasts = false;
+
+            GameObject topBar = new GameObject("TopAccentBar");
+            topBar.transform.SetParent(bannerGo.transform, false);
+            RectTransform tbRt = topBar.AddComponent<RectTransform>();
+            tbRt.anchorMin = new Vector2(0.02f, 1f);
+            tbRt.anchorMax = new Vector2(0.98f, 1f);
+            tbRt.pivot = new Vector2(0.5f, 1f);
+            tbRt.anchoredPosition = new Vector2(0f, -4f);
+            tbRt.sizeDelta = new Vector2(0f, 6f);
+            Image topBarImg = topBar.AddComponent<Image>();
+            topBarImg.color = accentColor;
+            topBarImg.raycastTarget = false;
+
+            GameObject titleGo = new GameObject("BriefingTitleText");
+            titleGo.transform.SetParent(bannerGo.transform, false);
+            RectTransform titleRt = titleGo.AddComponent<RectTransform>();
+            titleRt.anchorMin = new Vector2(0f, 1f);
+            titleRt.anchorMax = new Vector2(0.80f, 1f);
+            titleRt.pivot = new Vector2(0.5f, 1f);
+            titleRt.offsetMin = new Vector2(26f, -48f);
+            titleRt.offsetMax = new Vector2(0f, -14f);
+            Text titleTxt = titleGo.AddComponent<Text>();
+            titleTxt.font = font;
+            titleTxt.fontSize = 22;
+            titleTxt.fontStyle = FontStyle.Bold;
+            titleTxt.color = accentColor;
+            titleTxt.alignment = TextAnchor.MiddleLeft;
+            titleTxt.resizeTextForBestFit = true;
+            titleTxt.resizeTextMinSize = 16;
+            titleTxt.resizeTextMaxSize = 24;
+            titleTxt.raycastTarget = false;
+
+            GameObject stepGo = new GameObject("BriefingStepText");
+            stepGo.transform.SetParent(bannerGo.transform, false);
+            RectTransform stepRt = stepGo.AddComponent<RectTransform>();
+            stepRt.anchorMin = new Vector2(0.78f, 1f);
+            stepRt.anchorMax = new Vector2(1f, 1f);
+            stepRt.pivot = new Vector2(0.5f, 1f);
+            stepRt.offsetMin = new Vector2(0f, -48f);
+            stepRt.offsetMax = new Vector2(-26f, -14f);
+            Text stepTxt = stepGo.AddComponent<Text>();
+            stepTxt.font = font;
+            stepTxt.fontSize = 21;
+            stepTxt.fontStyle = FontStyle.Bold;
+            stepTxt.color = new Color(0.72f, 0.80f, 0.88f, 1f);
+            stepTxt.alignment = TextAnchor.MiddleRight;
+            stepTxt.raycastTarget = false;
+
+            GameObject bodyGo = new GameObject("BriefingBodyText");
+            bodyGo.transform.SetParent(bannerGo.transform, false);
+            RectTransform bodyRt = bodyGo.AddComponent<RectTransform>();
+            bodyRt.anchorMin = new Vector2(0f, 0f);
+            bodyRt.anchorMax = new Vector2(1f, 1f);
+            bodyRt.offsetMin = new Vector2(28f, 24f);
+            bodyRt.offsetMax = new Vector2(-28f, -52f);
+            Text bodyTxt = bodyGo.AddComponent<Text>();
+            bodyTxt.font = font;
+            bodyTxt.fontSize = 26;
+            bodyTxt.fontStyle = FontStyle.Bold;
+            bodyTxt.color = new Color(0.96f, 0.98f, 1.0f, 1f);
+            bodyTxt.alignment = TextAnchor.MiddleCenter;
+            bodyTxt.horizontalOverflow = HorizontalWrapMode.Wrap;
+            bodyTxt.verticalOverflow = VerticalWrapMode.Truncate;
+            bodyTxt.resizeTextForBestFit = true;
+            bodyTxt.resizeTextMinSize = 18;
+            bodyTxt.resizeTextMaxSize = 28;
+            bodyTxt.lineSpacing = 1.15f;
+            bodyTxt.raycastTarget = false;
+
+            GameObject trackGo = new GameObject("ProgressTrack");
+            trackGo.transform.SetParent(bannerGo.transform, false);
+            RectTransform trackRt = trackGo.AddComponent<RectTransform>();
+            trackRt.anchorMin = new Vector2(0.03f, 0f);
+            trackRt.anchorMax = new Vector2(0.97f, 0f);
+            trackRt.pivot = new Vector2(0.5f, 0f);
+            trackRt.anchoredPosition = new Vector2(0f, 10f);
+            trackRt.sizeDelta = new Vector2(0f, 7f);
+            Image trackImg = trackGo.AddComponent<Image>();
+            trackImg.color = new Color(1f, 1f, 1f, 0.14f);
+            trackImg.raycastTarget = false;
+
+            GameObject fillGo = new GameObject("ProgressFill");
+            fillGo.transform.SetParent(trackGo.transform, false);
+            RectTransform fillRt = fillGo.AddComponent<RectTransform>();
+            fillRt.anchorMin = Vector2.zero;
+            fillRt.anchorMax = Vector2.one;
+            fillRt.offsetMin = Vector2.zero;
+            fillRt.offsetMax = Vector2.zero;
+            Image fillImg = fillGo.AddComponent<Image>();
+            fillImg.color = accentColor;
+            fillImg.raycastTarget = false;
+
+            bannerGo.SetActive(false);
         }
 
         private static T FindChildComponent<T>(Transform root, string path) where T : Component
