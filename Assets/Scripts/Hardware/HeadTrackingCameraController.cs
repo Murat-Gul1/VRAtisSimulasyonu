@@ -104,7 +104,7 @@ namespace VRAtis.Hardware
         private float _smoothedFrameDt = 1f / 120f;
         private float _smoothedCutoff = 32f;
 
-        private const string CompassNorthPrefKey = "VRAtis_PhoneCompass9DOF_v2";
+        private const string CompassNorthPrefKey = "VRAtis_PhoneCompass9DOF_v3";
         private bool _pendingSeamlessSensorSwitch;
         private Vector3 _seamlessTargetFlatFwd = Vector3.forward;
 
@@ -121,7 +121,9 @@ namespace VRAtis.Hardware
 
         private void Awake()
         {
-            useCompassNorthLock = PlayerPrefs.GetInt(CompassNorthPrefKey, useCompassNorthLock ? 1 : 0) != 0;
+            // Varsayılan her zaman 6-DOF GameRotationVector (Android 9-DOF pusula duruş sonrası atlamalarını önler).
+            // Kullanıcı Ayarlar'dan özellikle açmadıkça 6-DOF başlar.
+            useCompassNorthLock = PlayerPrefs.GetInt(CompassNorthPrefKey, 0) != 0;
             preferGameRotationVector = !useCompassNorthLock;
 
             _readyPosition = transform.position;
@@ -347,8 +349,22 @@ namespace VRAtis.Hardware
                 }
                 else
                 {
-                    _smoothedHeadRot = targetRot;
-                    transform.rotation = targetRot;
+                    // Hızlı dönüşlerde 0 ms birebir tepki; kafa yavaşlayıp dururken Android HAL sensör
+                    // basamaklanmasını (100Hz/120Hz titreşim-atlama) 18 ms'lik mikro ütüleme ile yok et.
+                    ComputeExactAngleAxis(_smoothedHeadRot, targetRot, out float gapDeg, out _);
+                    float effSpeed = Mathf.Max(_estimatedHeadSpeedDegPerSec, gapDeg * 45f);
+                    if (effSpeed >= 24f || gapDeg > 2.5f)
+                    {
+                        _smoothedHeadRot = targetRot;
+                    }
+                    else
+                    {
+                        float blendFactor = Mathf.SmoothStep(0f, 1f, effSpeed / 24f);
+                        float microCutoff = Mathf.Lerp(55f, 220f, blendFactor);
+                        float t = 1f - Mathf.Exp(-microCutoff * rawDt);
+                        _smoothedHeadRot = Quaternion.Slerp(_smoothedHeadRot, targetRot, t);
+                    }
+                    transform.rotation = _smoothedHeadRot;
                 }
 
                 return;
@@ -396,7 +412,16 @@ namespace VRAtis.Hardware
                     }
                     else
                     {
-                        _smoothedHeadRot = targetRot;
+                        ComputeExactAngleAxis(_smoothedHeadRot, targetRot, out float lateGapDeg, out _);
+                        if (_estimatedHeadSpeedDegPerSec >= 24f || lateGapDeg > 2.5f)
+                        {
+                            _smoothedHeadRot = targetRot;
+                        }
+                        else
+                        {
+                            float lateT = Mathf.Lerp(0.32f, 0.85f, Mathf.Clamp01(_estimatedHeadSpeedDegPerSec / 24f));
+                            _smoothedHeadRot = Quaternion.Slerp(_smoothedHeadRot, targetRot, lateT);
+                        }
                     }
                 }
             }

@@ -140,6 +140,8 @@ namespace VRAtis.EditorTools
                     mr.sharedMaterial = matCollimator;
                     mr.shadowCastingMode = ShadowCastingMode.Off;
                     mr.receiveShadows = false;
+                    mr.lightProbeUsage = LightProbeUsage.Off;
+                    mr.reflectionProbeUsage = ReflectionProbeUsage.Off;
 
                     RedDotSightController ctrl = mr.GetComponent<RedDotSightController>();
                     if (ctrl == null)
@@ -153,6 +155,8 @@ namespace VRAtis.EditorTools
                     mr.sharedMaterial = matGlass;
                     mr.shadowCastingMode = ShadowCastingMode.Off;
                     mr.receiveShadows = false;
+                    mr.lightProbeUsage = LightProbeUsage.Off;
+                    mr.reflectionProbeUsage = ReflectionProbeUsage.Off;
                     continue;
                 }
 
@@ -328,6 +332,7 @@ namespace VRAtis.EditorTools
                 weaponSo.FindProperty("recoilPivot").objectReferenceValue = recoilPivot;
                 weaponSo.FindProperty("mechanismController").objectReferenceValue = mech;
                 weaponSo.FindProperty("magazineCapacity").intValue = 30;
+                weaponSo.FindProperty("autoReloadOnEmpty").boolValue = false;
                 weaponSo.ApplyModifiedPropertiesWithoutUndo();
 
                 EnsurePersistentListener(weapon.onWeaponFired, vfx, nameof(RifleVisualEffects.PlayMuzzleFlash));
@@ -520,22 +525,36 @@ namespace VRAtis.EditorTools
         private static Material BuildRedDotGlassMaterial()
         {
             string matPath = $"{MatFolderPath}/RedDot_Glass.mat";
+            Shader unlitShader = Shader.Find("Universal Render Pipeline/Unlit");
             Material mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
             if (mat == null)
             {
-                mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                mat = new Material(unlitShader);
                 AssetDatabase.CreateAsset(mat, matPath);
             }
+            else if (unlitShader != null && mat.shader != unlitShader)
+            {
+                mat.shader = unlitShader;
+            }
+
+            // Anti-reflective coated optical lens (Unlit Transparent):
+            // eliminates unshadowed sun specular dots and skybox cubemap glare on front/rear glass discs.
             mat.SetFloat("_Surface", 1f); // Transparent
-            mat.SetFloat("_Blend", 0f);
+            mat.SetFloat("_Blend", 0f);   // Alpha
             mat.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
             mat.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
+            mat.SetInt("_SrcBlendAlpha", (int)BlendMode.One);
+            mat.SetInt("_DstBlendAlpha", (int)BlendMode.OneMinusSrcAlpha);
             mat.SetInt("_ZWrite", 0);
+            mat.SetInt("_Cull", (int)CullMode.Back);
+            mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
             mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            mat.SetOverrideTag("RenderType", "Transparent");
+            mat.SetShaderPassEnabled("DepthOnly", false);
+            mat.SetShaderPassEnabled("MotionVectors", false);
+            mat.SetShaderPassEnabled("ShadowCaster", false);
             mat.renderQueue = (int)RenderQueue.Transparent;
-            mat.SetColor("_BaseColor", new Color(0.08f, 0.22f, 0.28f, 0.12f));
-            mat.SetFloat("_Metallic", 0.1f);
-            mat.SetFloat("_Smoothness", 0.92f);
+            mat.SetColor("_BaseColor", new Color(0.04f, 0.14f, 0.18f, 0.045f));
             EditorUtility.SetDirty(mat);
             return mat;
         }

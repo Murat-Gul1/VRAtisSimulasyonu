@@ -42,8 +42,8 @@ namespace VRAtis.Weapons
         [Header("Şarjör ve Mermi (Askeri Standart 30 Mermi - Ekransız)")]
         [SerializeField] private int magazineCapacity = 30;
         [SerializeField] private bool startWithFullMagazine = true;
-        [Tooltip("Şarjör boşaldığında otomatik olarak boş şarjörü atıp yenisini takar (gelecekte donanımsal şarjör sensörü gelince kapatılabilir).")]
-        [SerializeField] private bool autoReloadOnEmpty = true;
+        [Tooltip("Kapalı: Şarjör boşaldığında otomatik dolmaz; ESP32 GPIO 17 (veya klavye V) ile 1. temasta çıkar, 2. temasta yeni şarjör takılır.")]
+        [SerializeField] private bool autoReloadOnEmpty = false;
         [Range(0.05f, 1.5f)]
         [SerializeField] private float autoReloadDelaySec = 0.35f;
         [SerializeField] private float ejectToSwapDelaySec = 0.52f;
@@ -136,13 +136,19 @@ namespace VRAtis.Weapons
         private void OnEnable()
         {
             if (esp32Receiver != null)
+            {
                 esp32Receiver.OnShotFired += HandleEspShot;
+                esp32Receiver.OnMagazineTogglePressed += HandleEspMagazineToggle;
+            }
         }
 
         private void OnDisable()
         {
             if (esp32Receiver != null)
+            {
                 esp32Receiver.OnShotFired -= HandleEspShot;
+                esp32Receiver.OnMagazineTogglePressed -= HandleEspMagazineToggle;
+            }
         }
 
         private void Update()
@@ -180,6 +186,11 @@ namespace VRAtis.Weapons
         private void HandleEspShot(uint shotNumber)
         {
             Fire();
+        }
+
+        private void HandleEspMagazineToggle(uint toggleNumber)
+        {
+            ToggleMagazine();
         }
 
         public void Fire()

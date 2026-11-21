@@ -12,14 +12,15 @@ using Debug = UnityEngine.Debug;
 namespace VRAtis.Hardware
 {
     /// <summary>
-    /// Zero-allocation, high-priority UDP receiver for the 22-byte ESP32 quaternion + trigger packet.
+    /// Zero-allocation, high-priority UDP receiver for the 26-byte ESP32 quaternion + trigger + shoulder + magazine packet
+    /// (backward-compatible with 22-byte and 23-byte legacy packets).
     /// Includes burst draining and real-time Wi-Fi vs. Unity frame stutter diagnostics.
     /// </summary>
     public class Esp32RifleReceiver : MonoBehaviour
     {
         public const byte PacketHeader = 0xAA;
         public const int PacketSizeBytes = 22;
-        public const int MaxPacketSizeBytes = 23;
+        public const int MaxPacketSizeBytes = 26;
         private const int SioUdpConnReset = -1744830452;
 
         [Header("Ağ ve Performans Ayarları")]
@@ -47,6 +48,8 @@ namespace VRAtis.Hardware
         [SerializeField] private int burstDrainedPerSec;
         [SerializeField] private uint totalShotCount;
         [SerializeField] private bool isTriggerPressed;
+        [SerializeField] private bool isMagContactPressed;
+        [SerializeField] private uint totalMagToggleCount;
         [SerializeField] private Quaternion rawImuQuaternion = Quaternion.identity;
 
         /// <summary>
@@ -54,10 +57,17 @@ namespace VRAtis.Hardware
         /// </summary>
         public event Action<uint> OnShotFired;
 
+        /// <summary>
+        /// Fired on the Unity main thread for each newly confirmed GPIO 17 magazine toggle contact (equivalent to 'V').
+        /// </summary>
+        public event Action<uint> OnMagazineTogglePressed;
+
         public Quaternion RawImuQuaternion { get; private set; } = Quaternion.identity;
         public bool IsTriggerPressed { get; private set; }
         public bool IsShoulderPressed { get; private set; }
+        public bool IsMagContactPressed { get; private set; }
         public uint TotalShotCount { get; private set; }
+        public uint TotalMagToggleCount { get; private set; }
         public uint PacketSequence { get; private set; }
         public bool IsConnected { get; private set; }
         public float PacketRateHz { get; private set; }
@@ -84,6 +94,9 @@ namespace VRAtis.Hardware
         private Quaternion _sharedQuat = Quaternion.identity;
         private bool _sharedTriggerPressed;
         private bool _sharedShoulderPressed;
+        private bool _sharedHasMagData;
+        private bool _sharedMagContactPressed;
+        private ushort _sharedMagToggleCount;
         private uint _sharedShotCount;
         private uint _sharedPacketSeq;
         private bool _hasReceivedAnyPacket;
@@ -95,6 +108,8 @@ namespace VRAtis.Hardware
         // Main-thread state
         private bool _shotBaselineInitialized;
         private uint _lastProcessedShotCount;
+        private bool _magBaselineInitialized;
+        private ushort _lastProcessedMagToggleCount;
         private bool _loggedFirstPacket;
         private float _statsTimer;
         private float _maxFrameTimeMsWindow;
@@ -215,6 +230,9 @@ namespace VRAtis.Hardware
 
                     int latestPacketLen = Mathf.Min(bytesRead, MaxPacketSizeBytes);
                     _latestValidPacket[22] = 0;
+                    _latestValidPacket[23] = 0;
+                    _latestValidPacket[24] = 0;
+                    _latestValidPacket[25] = 0;
                     Buffer.BlockCopy(_recvBuffer, 0, _latestValidPacket, 0, latestPacketLen);
                     int burstCount = 1;
                     int drainedExtra = 0;
@@ -227,6 +245,9 @@ namespace VRAtis.Hardware
                         {
                             latestPacketLen = Mathf.Min(extraRead, MaxPacketSizeBytes);
                             _latestValidPacket[22] = 0;
+                            _latestValidPacket[23] = 0;
+                            _latestValidPacket[24] = 0;
+                            _latestValidPacket[25] = 0;
                             Buffer.BlockCopy(_recvBuffer, 0, _latestValidPacket, 0, latestPacketLen);
                             burstCount++;
                             drainedExtra++;
@@ -240,6 +261,9 @@ namespace VRAtis.Hardware
                     byte trig = _latestValidPacket[17];
                     uint shots = BitConverter.ToUInt32(_latestValidPacket, 18);
                     bool shoulder = (latestPacketLen >= 23 && _latestValidPacket[22] != 0) || ((trig & 0x02) != 0);
+                    bool hasMagField = latestPacketLen >= 26;
+                    bool magContact = hasMagField && _latestValidPacket[23] != 0;
+                    ushort magToggles = hasMagField ? BitConverter.ToUInt16(_latestValidPacket, 24) : (ushort)0;
 
                     if (!IsFinite(qw) || !IsFinite(qx) || !IsFinite(qy) || !IsFinite(qz))
                         continue;
@@ -264,6 +288,12 @@ namespace VRAtis.Hardware
                         _sharedQuat = parsed;
                         _sharedTriggerPressed = (trig & 0x01) != 0;
                         _sharedShoulderPressed = shoulder;
+                        if (hasMagField)
+                        {
+                            _sharedHasMagData = true;
+                            _sharedMagContactPressed = magContact;
+                            _sharedMagToggleCount = magToggles;
+                        }
                         _sharedShotCount = shots;
                         _sharedPacketSeq++;
                         _hasReceivedAnyPacket = true;
@@ -318,6 +348,9 @@ namespace VRAtis.Hardware
             Quaternion latestQuat;
             bool latestTrigger;
             bool latestShoulder;
+            bool latestHasMagData;
+            bool latestMagContact;
+            ushort latestMagToggles;
             uint latestShots;
             uint latestSeq;
             bool hasPacket;
@@ -328,6 +361,9 @@ namespace VRAtis.Hardware
                 latestQuat = _sharedQuat;
                 latestTrigger = _sharedTriggerPressed;
                 latestShoulder = _sharedShoulderPressed;
+                latestHasMagData = _sharedHasMagData;
+                latestMagContact = _sharedMagContactPressed;
+                latestMagToggles = _sharedMagToggleCount;
                 latestShots = _sharedShotCount;
                 latestSeq = _sharedPacketSeq;
                 hasPacket = _hasReceivedAnyPacket;
@@ -341,7 +377,7 @@ namespace VRAtis.Hardware
                 if (!_loggedFirstPacket)
                 {
                     _loggedFirstPacket = true;
-                    Debug.Log($"[Esp32RifleReceiver] İlk ESP32 paketi alındı! Atis={latestShots}, Tetik={latestTrigger}");
+                    Debug.Log($"[Esp32RifleReceiver] İlk ESP32 paketi alındı! Atis={latestShots}, Tetik={latestTrigger}, Sarjor={latestMagToggles}");
                 }
 
                 double elapsedMs = (currentTicks - lastTicks) * TicksToMs;
@@ -369,7 +405,39 @@ namespace VRAtis.Hardware
                 }
                 else if (latestShots < _lastProcessedShotCount)
                 {
-                    _lastProcessedShotCount = latestShots;
+                    // Treat as ESP32 reboot/reset when counter drops to 0 or jumps far backward;
+                    // ignore small 1-2 backward steps from rare out-of-order UDP packets.
+                    if (latestShots == 0 || (_lastProcessedShotCount - latestShots) > 2u)
+                    {
+                        _lastProcessedShotCount = latestShots;
+                    }
+                }
+
+                if (latestHasMagData)
+                {
+                    IsMagContactPressed = latestMagContact;
+                    TotalMagToggleCount = latestMagToggles;
+
+                    if (!_magBaselineInitialized)
+                    {
+                        _lastProcessedMagToggleCount = latestMagToggles;
+                        _magBaselineInitialized = true;
+                    }
+                    else if (latestMagToggles != _lastProcessedMagToggleCount)
+                    {
+                        // Unsigned 16-bit forward delta: handles wraparound cleanly and ignores ESP32 reboot reset to 0
+                        ushort forwardDelta = (ushort)(latestMagToggles - _lastProcessedMagToggleCount);
+                        if (forwardDelta > 0 && forwardDelta <= 8)
+                        {
+                            int emitCount = Math.Min((int)forwardDelta, 2);
+                            for (int i = 0; i < emitCount; i++)
+                            {
+                                ushort seqVal = (ushort)(_lastProcessedMagToggleCount + i + 1);
+                                OnMagazineTogglePressed?.Invoke(seqVal);
+                            }
+                        }
+                        _lastProcessedMagToggleCount = latestMagToggles;
+                    }
                 }
             }
             else
@@ -423,6 +491,8 @@ namespace VRAtis.Hardware
             burstDrainedPerSec = BurstDrainedPerSec;
             totalShotCount = TotalShotCount;
             isTriggerPressed = IsTriggerPressed;
+            isMagContactPressed = IsMagContactPressed;
+            totalMagToggleCount = TotalMagToggleCount;
             rawImuQuaternion = RawImuQuaternion;
         }
 
@@ -467,7 +537,7 @@ namespace VRAtis.Hardware
 
             string text =
                 $"[ESP32 Telemetri - Gizlemek için F1]\n" +
-                $"Durum: {status} | Paket Hızı: {PacketRateHz:F0} Hz | Atış: {TotalShotCount}\n" +
+                $"Durum: {status} | Paket Hızı: {PacketRateHz:F0} Hz | Atış: {TotalShotCount} | Şarjör: {TotalMagToggleCount}\n" +
                 $"Maks Wi-Fi Paket Boşluğu: {MaxWifiPacketGapMs:F1} ms (Normal: ~5-12 ms)\n" +
                 $"Maks Unity Kare Süresi: {MaxUnityFrameTimeMs:F1} ms ({liveFps:F0} FPS)\n" +
                 $"Eritilen Paket Şişmesi: {BurstDrainedPerSec}/sn";

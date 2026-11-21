@@ -112,3 +112,6 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# Local Wi-Fi / Hotspot credentials for ESP32 firmware (never commit to GitHub)
+**/wifi_secrets.h

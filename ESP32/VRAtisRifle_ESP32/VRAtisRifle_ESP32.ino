@@ -9,16 +9,20 @@
 
 // ============================================================================
 // VR ATIŞ SİMÜLASYONU — NİHAİ SAF 6-DOF DUAL-CORE ESP32-S3 FIRMWARE
-// Core 1: 1000 Hz Bortz-Koning Exact Quaternion AHRS + 2 Kademeli Akıllı ZUPT
-// Core 0: 250 Hz Düşük Gecikmeli Unicast UDP + Parazit Filtreli Tetik/Omuz
+// Core 1: 1000 Hz Bortz-Koning Exact Quaternion AHRS + 2 Kademeli Akıllı ZUPT + 1000 Hz Tetik Örnekleme
+// Core 0: 250 Hz Düşük Gecikmeli Unicast UDP + Parazit Filtreli Omuz/Şarjör
 // ============================================================================
 
-// --- AĞ AYARLARI (Önce Telefon Hotspot'u arar; yoksa Ev Wi-Fi Unicast'a bağlanır) ---
-const char* HOTSPOT_SSID     = "YOUR_HOTSPOT_SSID";         // Galaxy A26 Hotspot adın
-const char* HOTSPOT_PASSWORD = "YOUR_WIFI_PASSWORD";  // Galaxy A26 Hotspot şifren
+// --- AĞ AYARLARI (Yerel wifi_secrets.h varsa otomatik onu kullanır; yoksa şablon değerler derlenir) ---
+#if defined(__has_include) && __has_include("wifi_secrets.h")
+#include "wifi_secrets.h"
+#else
+const char* HOTSPOT_SSID     = "YOUR_HOTSPOT_SSID";
+const char* HOTSPOT_PASSWORD = "YOUR_HOTSPOT_PASSWORD";
 
-const char* HOME_WIFI_SSID   = "YOUR_HOME_WIFI_SSID";            // PC/Ev testleri için modem adı
-const char* HOME_WIFI_PASS   = "YOUR_WIFI_PASSWORD";
+const char* HOME_WIFI_SSID   = "YOUR_HOME_WIFI_SSID";
+const char* HOME_WIFI_PASS   = "YOUR_HOME_WIFI_PASSWORD";
+#endif
 const IPAddress HOME_PC_IP(192, 168, 1, 105);    // Yedek PC yerel IP
 
 const uint16_t UDP_PORT      = 4210;
@@ -29,6 +33,7 @@ IPAddress targetIp           = HOME_PC_IP;
 #define I2C_SCL_PIN  9
 #define TRIGGER_PIN  15     // Tetik Sinyali -> GPIO 15, Diğer uç -> GND
 #define SHOULDER_PIN 16     // Omuz Temas Sensörü -> GPIO 16, Diğer plaka -> GND
+#define MAG_PIN      17     // Şarjör Çıkar/Tak Kontağı -> GPIO 17, Diğer uç -> GND (Her temas = oyuna 'V')
 #define I2C_CLOCK_HZ 400000 // 400 kHz Fast-Mode I2C
 
 // --- ZAMANLAMA SABİTLERİ (Core 1: 1000 Hz IMU / Core 0: 250 Hz UDP) ---
@@ -36,9 +41,12 @@ const uint32_t IMU_INTERVAL_US        = 1000;  // 1000 Hz (1 ms) deterministik C
 const uint32_t UDP_INTERVAL_US        = 4000;  // 250 Hz (4 ms) akıcı Unicast UDP (120 FPS ekrana kare başına 2+ paket)
 const uint32_t MIN_UDP_GAP_US         = 1500;  // Wi-Fi TX koruması (1.5 ms)
 const uint32_t MIN_SHOT_INTERVAL_US   = 35000; // Tetik ark koruması (35 ms)
-const uint32_t TRIGGER_CONFIRM_US     = 12000; // Tetik basış onay süresi (12 ms kesintisiz LOW -> GPIO16 parazit/ESD reddi)
-const uint32_t RELEASE_DEBOUNCE_US    = 25000; // Tetik bırakma kararlılığı (25 ms kesintisiz HIGH)
+const uint8_t  TRIGGER_CONFIRM_MS     = 6;     // Tetik onay eşiği (Core 1 1kHz akıllı sayaç: 6 ms net LOW -> <3 ms ESD/GPIO16 parazit reddi, sıçramada atış kaçmaz)
+const uint8_t  TRIGGER_RELEASE_MS     = 15;    // Tetik bırakma eşiği (15 ms net HIGH -> seri atışta hızlı yeniden kurma)
 const uint32_t SHOULDER_DEBOUNCE_US   = 30000; // Omuz sensörü sıçrama koruması (30 ms kesintisiz durum)
+const uint32_t MAG_CONFIRM_US         = 20000; // Şarjör temas onay süresi (20 ms kesintisiz LOW -> parazit/ESD reddi)
+const uint32_t MAG_RELEASE_DEBOUNCE_US= 80000; // Kablolar ayrıldıktan sonra yeniden kurulma (80 ms kesintisiz HIGH)
+const uint32_t MIN_MAG_TOGGLE_GAP_US  = 300000;// İki şarjör olayı arası min 300 ms (tek temasta çift tetik koruması)
 const uint32_t DEBUG_INTERVAL_MS      = 1000;  // 1 Hz durum çıktısı
 const uint32_t UNICAST_KEEPALIVE_MS   = 6000;  // Unity "VRAT" yanıtı aktifken broadcast susar (Wi-Fi takılmasını önler)
 
@@ -87,16 +95,18 @@ enum CalRequest : uint8_t {
   CAL_CLEAR_ALL
 };
 
-// Unity'ye giden 23 byte'lık UDP paketi (Unity Esp32RifleReceiver ile %100 uyumlu)
+// Unity'ye giden 26 byte'lık UDP paketi (Unity Esp32RifleReceiver ile %100 uyumlu)
 struct __attribute__((packed)) RifleQuaternionPacket {
-  uint8_t header;         // 0xAA doğrulama baytı
-  float qw, qx, qy, qz;   // 3D Dönüş Verisi
-  uint8_t triggerState;   // 1 = Tetik Basılı, 0 = Serbest
-  uint32_t shotCount;     // Toplam tetik basma sayacı
-  uint8_t shoulderState;  // 1 = Omuzlandı (Red Dot Açık), 0 = Serbest (Red Dot Kapalı)
+  uint8_t header;           // 0xAA doğrulama baytı
+  float qw, qx, qy, qz;     // 3D Dönüş Verisi
+  uint8_t triggerState;     // 1 = Tetik Basılı, 0 = Serbest
+  uint32_t shotCount;       // Toplam tetik basma sayacı
+  uint8_t shoulderState;    // 1 = Omuzlandı (Red Dot Açık), 0 = Serbest (Red Dot Kapalı)
+  uint8_t magState;         // 1 = Şarjör Kontağı Temaslı (GPIO 17 LOW), 0 = Serbest
+  uint16_t magToggleCount;  // Onaylı şarjör temas sayacı (1. temas = çıkar, 2. temas = tak / Unity 'V')
 };
 
-// Core 1 (IMU) -> Core 0 (Ağ/Serial) kilitli paylaşımlı anlık durum
+// Core 1 (IMU + 1kHz Tetik) -> Core 0 (Ağ/Serial) kilitli paylaşımlı anlık durum
 struct SharedImuSnapshot {
   float qw, qx, qy, qz;
   float gxDegS, gyDegS, gzDegS;
@@ -107,7 +117,11 @@ struct SharedImuSnapshot {
   uint32_t satCount;
   uint32_t i2cErrCount;
   uint32_t pwrResetCount;
-  uint8_t zuptTier;       // 0=HAREKET, 1=NISAN, 2=SABIT
+  uint32_t shotCount;
+  uint32_t triggerGlitchCount;
+  uint8_t zuptTier;         // 0=HAREKET, 1=NISAN, 2=SABIT
+  bool triggerHeld;
+  bool triggerEventPending;
   bool calBusy;
 };
 
@@ -122,7 +136,8 @@ SharedImuSnapshot sharedState = {
   25.0f,
   1.0f, 1.0f, 1.0f,
   1000, 0, 0, 0, 0,
-  0, false
+  0, 0,
+  0, false, false, false
 };
 
 TaskHandle_t imuTaskHandle = nullptr;
@@ -135,23 +150,33 @@ volatile uint8_t pendingCal   = CAL_NONE;
 bool hasFlashGyroCal          = false;
 bool sensorInitialized        = false;
 
-// Tetik & Omuz Kararlı Filtre Değişkenleri (Ham edge-ISR yerine 12ms/30ms kesintisiz onay)
-bool triggerEventFlag           = false;
-bool triggerArmed               = true;
-uint32_t interruptCounter       = 0;
+// Tetik (Core 1 1000 Hz Wi-Fi'dan izole akıllı integrator) & Omuz Kararlı Filtre Değişkenleri
+bool trigArmedCore1             = true;
+uint8_t trigPressScore          = 0;
+uint8_t trigReleaseScore        = 0;
+bool trigSawLowSinceIdle        = false;
 uint32_t lastTriggerPressUs     = 0;
-bool trigLowTracking            = false;
-uint32_t trigLowStartUs         = 0;
-uint16_t trigLowSamples         = 0;
-bool trigHighTracking           = false;
-uint32_t trigHighStartUs        = 0;
-uint32_t triggerGlitchRejected  = 0;
+uint32_t triggerShotCountLocal  = 0;
+uint32_t triggerGlitchLocal     = 0;
+bool triggerEventFlag           = false;
 
 bool shoulderEventFlag          = false;
 uint8_t shoulderState           = 0;
 bool shoulderPendingTracking    = false;
 uint8_t shoulderPendingVal      = 0;
 uint32_t shoulderPendingStartUs = 0;
+
+// Şarjör Çıkar/Tak Kontağı Filtre Değişkenleri (GPIO 17 <-> GND: Her onaylı temas = Unity 'V')
+bool magEventFlag               = false;
+bool magArmed                   = true;
+uint16_t magToggleCounter       = 0;
+uint32_t lastMagToggleUs        = 0;
+bool magLowTracking             = false;
+uint32_t magLowStartUs          = 0;
+uint16_t magLowSamples          = 0;
+bool magHighTracking            = false;
+uint32_t magHighStartUs         = 0;
+uint32_t magGlitchRejected      = 0;
 
 // Unity Unicast kilit durumu (kilitliyken broadcast kapatılır -> Wi-Fi takılması sıfır)
 bool unityClientLocked          = false;
@@ -784,7 +809,73 @@ void updateAHRS6DofExact(
   }
 }
 
-// --- CORE 1 YÜKSEK ÖNCELİKLİ 1000 Hz SAF 6-DOF IMU GÖREVİ ---
+// --- CORE 1 YÜKSEK ÖNCELİKLİ 1000 Hz SAF 6-DOF IMU + TETİK ÖRNEKLEME GÖREVİ ---
+// Core 1 Wi-Fi/UDP tarafından asla bloklanmaz; sızıntılı integrator (leaky counter) sayesinde
+// <3 ms GPIO16 çapraz etkileşim/ESD parazitini reddederken mekanik kontak sıçramalarında atış kaçırmaz.
+static inline void sampleTrigger1kHz(uint32_t nowUs) {
+  bool trigLow = (digitalRead(TRIGGER_PIN) == LOW);
+  if (trigArmedCore1) {
+    if (trigLow) {
+      trigSawLowSinceIdle = true;
+      if (trigPressScore < TRIGGER_CONFIRM_MS) {
+        trigPressScore++;
+      }
+      if ((trigPressScore >= TRIGGER_CONFIRM_MS) &&
+          ((uint32_t)(nowUs - lastTriggerPressUs) >= MIN_SHOT_INTERVAL_US)) {
+        trigArmedCore1 = false;
+        trigPressScore = 0;
+        trigReleaseScore = 0;
+        trigSawLowSinceIdle = false;
+        lastTriggerPressUs = nowUs;
+        triggerShotCountLocal++;
+
+        portENTER_CRITICAL(&stateMux);
+        sharedState.shotCount = triggerShotCountLocal;
+        sharedState.triggerHeld = true;
+        sharedState.triggerEventPending = true;
+        portEXIT_CRITICAL(&stateMux);
+      }
+    } else {
+      // Tek 1 ms kontak sıçraması tüm ilerlemeyi sıfırlamaz (2 azaltır); kısa parazit 0'a inip reddedilir
+      if (trigPressScore > 2) {
+        trigPressScore -= 2;
+      } else {
+        if (trigSawLowSinceIdle) {
+          triggerGlitchLocal++;
+          trigSawLowSinceIdle = false;
+          portENTER_CRITICAL(&stateMux);
+          sharedState.triggerGlitchCount = triggerGlitchLocal;
+          portEXIT_CRITICAL(&stateMux);
+        }
+        trigPressScore = 0;
+      }
+    }
+  } else {
+    if (!trigLow) {
+      if (trigReleaseScore < TRIGGER_RELEASE_MS) {
+        trigReleaseScore++;
+      }
+      if (trigReleaseScore >= TRIGGER_RELEASE_MS) {
+        trigArmedCore1 = true;
+        trigReleaseScore = 0;
+        trigPressScore = 0;
+        trigSawLowSinceIdle = false;
+
+        portENTER_CRITICAL(&stateMux);
+        sharedState.triggerHeld = false;
+        portEXIT_CRITICAL(&stateMux);
+      }
+    } else {
+      // Bırakma sıçramasına dayanıklı sayaç (seri atışta yeniden kurma gecikmez)
+      if (trigReleaseScore > 2) {
+        trigReleaseScore -= 2;
+      } else {
+        trigReleaseScore = 0;
+      }
+    }
+  }
+}
+
 #if (configTICK_RATE_HZ < 1000)
 void imuFallbackTimerCb(void* arg) {
   if (imuTaskHandle != nullptr) {
@@ -850,6 +941,9 @@ void imuTaskFn(void* param) {
 #endif
 
     uint32_t nowUs = micros();
+
+    // 2.5) Deterministik 1000 Hz Tetik Örnekleme (Wi-Fi veya I2C gecikmesinden tamamen izole)
+    sampleTrigger1kHz(nowUs);
 
     // 3) 1000 Hz MPU-9250/6500 Okuma + Gevşek Kablo Koruması + 2 Kademeli ZUPT + Bortz Exact 6-DOF AHRS
     if (readRawMPU()) {
@@ -1099,17 +1193,19 @@ void imuTaskFn(void* param) {
 }
 
 // --- CORE 0 AĞ, 250 Hz UNICAST UDP VE SERİ PORT GÖREVİ ---
-void sendUDPPacket(bool forceTriggerHigh, const SharedImuSnapshot& snap) {
+void sendUDPPacket(bool forceTriggerHigh, bool forceMagHigh, const SharedImuSnapshot& snap) {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  packet.header        = 0xAA;
-  packet.qw            = snap.qw;
-  packet.qx            = snap.qx;
-  packet.qy            = snap.qy;
-  packet.qz            = snap.qz;
-  packet.triggerState  = (forceTriggerHigh || !triggerArmed) ? 1 : 0;
-  packet.shotCount     = interruptCounter;
-  packet.shoulderState = shoulderState;
+  packet.header         = 0xAA;
+  packet.qw             = snap.qw;
+  packet.qx             = snap.qx;
+  packet.qy             = snap.qy;
+  packet.qz             = snap.qz;
+  packet.triggerState   = (forceTriggerHigh || snap.triggerHeld) ? 1 : 0;
+  packet.shotCount      = snap.shotCount;
+  packet.shoulderState  = shoulderState;
+  packet.magState       = (forceMagHigh || !magArmed) ? 1 : 0;
+  packet.magToggleCount = magToggleCounter;
 
   udp.beginPacket(targetIp, UDP_PORT);
   udp.write((const uint8_t*)&packet, sizeof(packet));
@@ -1122,7 +1218,9 @@ void connectBestWifi() {
   vTaskDelay(pdMS_TO_TICKS(80));
   WiFi.setAutoReconnect(true);
 
-  bool hotspotConfigured = (strcmp(HOTSPOT_SSID, "TELEFON_HOTSPOT_ADI") != 0) && (strlen(HOTSPOT_SSID) > 0);
+  bool hotspotConfigured = (strcmp(HOTSPOT_SSID, "TELEFON_HOTSPOT_ADI") != 0) &&
+                           (strcmp(HOTSPOT_SSID, "YOUR_HOTSPOT_SSID") != 0) &&
+                           (strlen(HOTSPOT_SSID) > 0);
   bool hotspotFound = false;
   bool homeFound = false;
 
@@ -1218,48 +1316,22 @@ void netTaskFn(void* param) {
   for (;;) {
     uint32_t nowUs = micros();
 
-    // 1) Tetik Kararlı Basış & Bırakma Filtresi (GPIO 15: 12 ms kesintisiz LOW onayı -> GPIO 16 parazit/ESD tamamen engellenir)
-    bool trigLow = (digitalRead(TRIGGER_PIN) == LOW);
-    if (triggerArmed) {
-      if (trigLow) {
-        if (!trigLowTracking) {
-          trigLowTracking = true;
-          trigLowStartUs = nowUs;
-          trigLowSamples = 1;
-        } else {
-          trigLowSamples++;
-          if ((nowUs - trigLowStartUs >= TRIGGER_CONFIRM_US) &&
-              (trigLowSamples >= 6) &&
-              (nowUs - lastTriggerPressUs >= MIN_SHOT_INTERVAL_US)) {
-            triggerArmed = false;
-            trigLowTracking = false;
-            trigLowSamples = 0;
-            trigHighTracking = false;
-            lastTriggerPressUs = nowUs;
-            interruptCounter++;
-            triggerEventFlag = true;
-            if (serialCanWriteNow()) {
-              Serial.printf("[TETIK] GPIO%d onaylandi -> Atis #%lu | Omuz(GPIO%d):%u\n",
-                            TRIGGER_PIN, (unsigned long)interruptCounter, SHOULDER_PIN, shoulderState);
-            }
-          }
-        }
-      } else if (trigLowTracking) {
-        triggerGlitchRejected++;
-        trigLowTracking = false;
-        trigLowSamples = 0;
-      }
-    } else {
-      if (!trigLow) {
-        if (!trigHighTracking) {
-          trigHighTracking = true;
-          trigHighStartUs = nowUs;
-        } else if (nowUs - trigHighStartUs >= RELEASE_DEBOUNCE_US) {
-          triggerArmed = true;
-          trigHighTracking = false;
-        }
-      } else {
-        trigHighTracking = false;
+    // 1) Core 1 (1000 Hz Wi-Fi'dan izole) onaylı tetik olayını çek
+    uint32_t latestShotCount = 0;
+    bool core1TriggerEvent = false;
+    portENTER_CRITICAL(&stateMux);
+    latestShotCount = sharedState.shotCount;
+    if (sharedState.triggerEventPending) {
+      core1TriggerEvent = true;
+      sharedState.triggerEventPending = false;
+    }
+    portEXIT_CRITICAL(&stateMux);
+
+    if (core1TriggerEvent) {
+      triggerEventFlag = true;
+      if (serialCanWriteNow()) {
+        Serial.printf("[TETIK] GPIO%d onaylandi -> Atis #%lu | Omuz(GPIO%d):%u\n",
+                      TRIGGER_PIN, (unsigned long)latestShotCount, SHOULDER_PIN, shoulderState);
       }
     }
 
@@ -1279,21 +1351,70 @@ void netTaskFn(void* param) {
                         SHOULDER_PIN,
                         shoulderState ? "OMUZLANDI (Red Dot ACIK)" : "SERBEST (Red Dot KAPALI)",
                         TRIGGER_PIN,
-                        trigLow ? 1 : 0);
+                        (digitalRead(TRIGGER_PIN) == LOW) ? 1 : 0);
         }
       }
     } else {
       shoulderPendingTracking = false;
     }
 
-    // 3) 250 Hz Deterministik Unicast UDP Göndericisi (Acil tetik/omuz olayları anında gider)
+    // 2.5) Şarjör Çıkar/Tak Kontağı Filtresi (GPIO 17 <-> GND: 20 ms kesintisiz LOW -> 1 toggle/'V', 80 ms HIGH -> yeniden kur)
+    bool magLow = (digitalRead(MAG_PIN) == LOW);
+    if (magArmed) {
+      if (magLow) {
+        if (!magLowTracking) {
+          magLowTracking = true;
+          magLowStartUs = nowUs;
+          magLowSamples = 1;
+        } else {
+          magLowSamples++;
+          if ((nowUs - magLowStartUs >= MAG_CONFIRM_US) &&
+              (magLowSamples >= 10) &&
+              (nowUs - lastMagToggleUs >= MIN_MAG_TOGGLE_GAP_US)) {
+            magArmed = false;
+            magLowTracking = false;
+            magLowSamples = 0;
+            magHighTracking = false;
+            lastMagToggleUs = nowUs;
+            magToggleCounter++;
+            magEventFlag = true;
+            if (serialCanWriteNow()) {
+              Serial.printf("[SARJOR] GPIO%d temas onaylandi -> Toggle #%u (%s / Unity 'V')\n",
+                            MAG_PIN,
+                            (unsigned)magToggleCounter,
+                            (magToggleCounter & 1U) ? "CIKAR" : "TAK");
+            }
+          }
+        }
+      } else if (magLowTracking) {
+        magGlitchRejected++;
+        magLowTracking = false;
+        magLowSamples = 0;
+      }
+    } else {
+      if (!magLow) {
+        if (!magHighTracking) {
+          magHighTracking = true;
+          magHighStartUs = nowUs;
+        } else if (nowUs - magHighStartUs >= MAG_RELEASE_DEBOUNCE_US) {
+          magArmed = true;
+          magHighTracking = false;
+        }
+      } else {
+        magHighTracking = false;
+      }
+    }
+
+    // 3) 250 Hz Deterministik Unicast UDP Göndericisi (Acil tetik/omuz/şarjör olayları anında gider)
     bool timeForRegularUdp  = (nowUs - lastUdpUs >= UDP_INTERVAL_US);
-    bool urgentEventPending = (triggerEventFlag || shoulderEventFlag) && (nowUs - lastUdpUs >= MIN_UDP_GAP_US);
+    bool urgentEventPending = (triggerEventFlag || shoulderEventFlag || magEventFlag) && (nowUs - lastUdpUs >= MIN_UDP_GAP_US);
 
     if (urgentEventPending || timeForRegularUdp) {
       bool isTriggerShot = triggerEventFlag;
+      bool isMagToggle   = magEventFlag;
       triggerEventFlag   = false;
       shoulderEventFlag  = false;
+      magEventFlag       = false;
       lastUdpUs          = nowUs;
 
       SharedImuSnapshot snap;
@@ -1301,7 +1422,7 @@ void netTaskFn(void* param) {
       snap = sharedState;
       portEXIT_CRITICAL(&stateMux);
 
-      sendUDPPacket(isTriggerShot, snap);
+      sendUDPPacket(isTriggerShot, isMagToggle, snap);
     }
 
     // 4) Seri komutlar, Unity Unicast keşfi ve 1 Hz teşhis çıktısı
@@ -1334,17 +1455,18 @@ void netTaskFn(void* param) {
 
         if (!snap.calBusy) {
           uint8_t liveTrig = (digitalRead(TRIGGER_PIN) == LOW) ? 1 : 0;
+          uint8_t liveMag  = (digitalRead(MAG_PIN) == LOW) ? 1 : 0;
           const char* modeTag = (snap.zuptTier == 2) ? "6DOF-SABIT"
                               : (snap.zuptTier == 1 ? "6DOF-NISAN" : "6DOF-HAREKET");
 
-          Serial.printf("[%s] %luHz maxDt:%.1fms | Temp:%.1fC | G(%+.2f,%+.2f,%+.2f) | Sc(%.3f,%.3f,%.3f) | T:%u O:%u A:%lu",
+          Serial.printf("[%s] %luHz maxDt:%.1fms | Temp:%.1fC | G(%+.2f,%+.2f,%+.2f) | Sc(%.3f,%.3f,%.3f) | T:%u O:%u S:%u(%u) A:%lu",
                         modeTag,
                         (unsigned long)snap.imuSamplesInSec,
                         snap.maxDtUs * 0.001f,
                         snap.tempC,
                         snap.gxDegS, snap.gyDegS, snap.gzDegS,
                         snap.scaleX, snap.scaleY, snap.scaleZ,
-                        liveTrig, shoulderState, (unsigned long)interruptCounter);
+                        liveTrig, shoulderState, liveMag, (unsigned)magToggleCounter, (unsigned long)snap.shotCount);
           if (snap.satCount > 0) {
             Serial.printf(" | SAT:%lu", (unsigned long)snap.satCount);
           }
@@ -1354,8 +1476,11 @@ void netTaskFn(void* param) {
           if (snap.pwrResetCount > 0) {
             Serial.printf(" | PWR_RST:%lu", (unsigned long)snap.pwrResetCount);
           }
-          if (triggerGlitchRejected > 0) {
-            Serial.printf(" | PARAZIT_ENGEL:%lu", (unsigned long)triggerGlitchRejected);
+          if (snap.triggerGlitchCount > 0) {
+            Serial.printf(" | PARAZIT_ENGEL:%lu", (unsigned long)snap.triggerGlitchCount);
+          }
+          if (magGlitchRejected > 0) {
+            Serial.printf(" | SARJOR_PARAZIT:%lu", (unsigned long)magGlitchRejected);
           }
           Serial.println();
         }
@@ -1376,6 +1501,7 @@ void setup() {
 
   pinMode(TRIGGER_PIN, INPUT_PULLUP);
   pinMode(SHOULDER_PIN, INPUT_PULLUP);
+  pinMode(MAG_PIN, INPUT_PULLUP);
 
   initSensors();
 
@@ -1390,8 +1516,15 @@ void setup() {
   sharedState.scaleZ = gyroScaleZ;
   portEXIT_CRITICAL(&stateMux);
 
-  triggerArmed = (digitalRead(TRIGGER_PIN) == HIGH);
+  trigArmedCore1 = (digitalRead(TRIGGER_PIN) == HIGH);
+  lastTriggerPressUs = micros() - MIN_SHOT_INTERVAL_US;
   shoulderState = (digitalRead(SHOULDER_PIN) == LOW) ? 1 : 0;
+  magArmed = (digitalRead(MAG_PIN) == HIGH);
+  lastMagToggleUs = micros() - MIN_MAG_TOGGLE_GAP_US;
+
+  portENTER_CRITICAL(&stateMux);
+  sharedState.triggerHeld = !trigArmedCore1;
+  portEXIT_CRITICAL(&stateMux);
 
   // Core 1: İzole 1000 Hz Saf 6-DOF IMU Görevi (Yüksek Öncelik = 6)
   xTaskCreatePinnedToCore(

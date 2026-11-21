@@ -9124,7 +9124,7 @@ MonoBehaviour:
   rifleOrientationController: {fileID: 1252551449}
   opticalTracker: {fileID: 1252551452}
   lockLandscapeOnMobile: 1
-  useCompassNorthLock: 1
+  useCompassNorthLock: 0
   preferGameRotationVector: 1
   requestedSensorRateHz: 200
   autoZeroYawOnFirstReading: 1
@@ -33831,7 +33831,7 @@ MonoBehaviour:
   ammoPreset: 0
   magazineCapacity: 30
   startWithFullMagazine: 1
-  autoReloadOnEmpty: 1
+  autoReloadOnEmpty: 0
   autoReloadDelaySec: 0.35
   ejectToSwapDelaySec: 0.52
   insertSeatDurationSec: 0.26
