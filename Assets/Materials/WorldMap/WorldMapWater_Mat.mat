@@ -122,7 +122,7 @@ Material:
     - _GlossMapScale: 0
     - _Glossiness: 0
     - _GlossyReflections: 0
-    - _MapSize: 1600
+    - _MapSize: 2400
     - _Metallic: 0.06
     - _OcclusionStrength: 1
     - _Parallax: 0.005
@@ -150,7 +150,7 @@ Material:
     - _DeepColor: {r: 0.04, g: 0.16999996, b: 0.30999997, a: 1}
     - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
     - _FoamColor: {r: 0.9, g: 0.96, b: 0.97999996, a: 1}
-    - _MapOriginXZ: {r: -800, g: -800, b: 0, a: 0}
+    - _MapOriginXZ: {r: -1200, g: -1200, b: 0, a: 0}
     - _MidColor: {r: 0.089999996, g: 0.35999998, b: 0.52, a: 1}
     - _ShallowColor: {r: 0.17999998, g: 0.56, b: 0.62, a: 1}
     - _SkyReflectColor: {r: 0.6399999, g: 0.78999996, b: 0.9, a: 1}

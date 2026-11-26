@@ -247,7 +247,7 @@ namespace VRAtis.EditorTools
             RenderSettings.fogMode = FogMode.Linear;
             RenderSettings.fogColor = new Color(0.68f, 0.78f, 0.85f, 1f);
             RenderSettings.fogStartDistance = 360f;
-            RenderSettings.fogEndDistance = 1220f;
+            RenderSettings.fogEndDistance = 1650f;
 
             // 1. Directional Sun Light
             GameObject sunGo = new GameObject("Directional Light");
@@ -258,7 +258,7 @@ namespace VRAtis.EditorTools
             sun.shadows = LightShadows.Soft;
             sunGo.transform.rotation = Quaternion.Euler(46f, -38f, 0f);
 
-            // 2. Calradia-Style 1600m x 1600m Continent Terrain (Natural Sea, Beaches, Desert, Steep Mountains, Rivers — ZERO yellow border bars!)
+            // 2. Bannerlord-Scale 2400m x 2400m Continent Terrain + 5 Factions + 154 Cultural Villages
             GameObject mapRoot = new GameObject("WorldMap_Environment");
 
             Material centerMat = AssetDatabase.LoadAssetAtPath<Material>(CenterMarkerMatPath);
@@ -283,7 +283,7 @@ namespace VRAtis.EditorTools
             cam.backgroundColor = new Color(0.55f, 0.67f, 0.78f, 1f);
             cam.fieldOfView = 48f;
             cam.nearClipPlane = 0.5f;
-            cam.farClipPlane = 1500f;
+            cam.farClipPlane = 1850f;
             camGo.AddComponent<AudioListener>();
             UniversalAdditionalCameraData urpCam = camGo.AddComponent<UniversalAdditionalCameraData>();
             urpCam.renderShadows = true;
@@ -407,6 +407,63 @@ namespace VRAtis.EditorTools
 
             UnityEngine.UI.Text hintText = CreateText("HintText", hintPill.transform, font, "Joystick / WASD / Sürükle: İmleci Gezdir   •   Joystick Butonu / Space: İşaretle   •   Scroll / Çift Parmak: Yakınlaştır", 16, FontStyle.Normal, TextSecondary, TextAnchor.MiddleCenter);
             StretchFull(hintText.GetComponent<RectTransform>());
+
+            // Floating Hover Tooltip Pill (tracks hovered Capital / City / Military Base / Village above the yellow cursor ring)
+            GameObject hoverTooltip = CreateBorderedPanel("SettlementHoverTooltip", canvasGo.transform, roundedSprite, StoryGold, new Color(0.06f, 0.09f, 0.14f, 0.92f), 2f);
+            UnityEngine.UI.Image hoverBorderImg = hoverTooltip.GetComponent<UnityEngine.UI.Image>();
+            if (hoverBorderImg != null) hoverBorderImg.raycastTarget = false;
+            foreach (UnityEngine.UI.Graphic g in hoverTooltip.GetComponentsInChildren<UnityEngine.UI.Graphic>(true))
+                g.raycastTarget = false;
+
+            RectTransform hoverRt = hoverTooltip.GetComponent<RectTransform>();
+            hoverRt.anchorMin = new Vector2(0.5f, 0.5f);
+            hoverRt.anchorMax = new Vector2(0.5f, 0.5f);
+            hoverRt.pivot = new Vector2(0.5f, 0f);
+            hoverRt.anchoredPosition = Vector2.zero;
+            hoverRt.sizeDelta = new Vector2(360f, 68f);
+
+            GameObject hoverAccentGo = new GameObject("FactionAccentBar");
+            hoverAccentGo.transform.SetParent(hoverTooltip.transform, false);
+            UnityEngine.UI.Image hoverAccentImg = hoverAccentGo.AddComponent<UnityEngine.UI.Image>();
+            hoverAccentImg.color = StoryGold;
+            hoverAccentImg.raycastTarget = false;
+            RectTransform haRt = hoverAccentGo.GetComponent<RectTransform>();
+            haRt.anchorMin = new Vector2(0f, 0.14f);
+            haRt.anchorMax = new Vector2(0f, 0.86f);
+            haRt.pivot = new Vector2(0f, 0.5f);
+            haRt.anchoredPosition = new Vector2(10f, 0f);
+            haRt.sizeDelta = new Vector2(5f, 0f);
+
+            UnityEngine.UI.Text hoverTitle = CreateText("SettlementTitle", hoverTooltip.transform, font, "ANKARA", 22, FontStyle.Bold, TextPrimary, TextAnchor.UpperLeft);
+            hoverTitle.raycastTarget = false;
+            RectTransform htRt = hoverTitle.GetComponent<RectTransform>();
+            htRt.anchorMin = Vector2.zero;
+            htRt.anchorMax = Vector2.one;
+            htRt.offsetMin = new Vector2(24f, 28f);
+            htRt.offsetMax = new Vector2(-14f, -8f);
+
+            UnityEngine.UI.Text hoverSub = CreateText("SettlementSubtitle", hoverTooltip.transform, font, "TÜRKİYE  •  BAŞKENT", 15, FontStyle.Bold, StoryGold, TextAnchor.LowerLeft);
+            hoverSub.raycastTarget = false;
+            RectTransform hsRt = hoverSub.GetComponent<RectTransform>();
+            hsRt.anchorMin = Vector2.zero;
+            hsRt.anchorMax = Vector2.one;
+            hsRt.offsetMin = new Vector2(24f, 8f);
+            hsRt.offsetMax = new Vector2(-14f, -32f);
+
+            hoverTooltip.SetActive(false);
+
+            // Wire StoryMapSettlementHoverUI
+            StoryMapSettlementHoverUI hoverCtrl = canvasGo.AddComponent<StoryMapSettlementHoverUI>();
+            WorldMapSettlementRegistry settleReg = mapRoot.GetComponent<WorldMapSettlementRegistry>();
+            SerializedObject hoverSo = new SerializedObject(hoverCtrl);
+            hoverSo.FindProperty("mapCamera").objectReferenceValue = mapCamCtrl;
+            hoverSo.FindProperty("registry").objectReferenceValue = settleReg;
+            hoverSo.FindProperty("tooltipRoot").objectReferenceValue = hoverRt;
+            hoverSo.FindProperty("accentBarImage").objectReferenceValue = hoverAccentImg;
+            hoverSo.FindProperty("borderImage").objectReferenceValue = hoverBorderImg;
+            hoverSo.FindProperty("titleText").objectReferenceValue = hoverTitle;
+            hoverSo.FindProperty("subtitleText").objectReferenceValue = hoverSub;
+            hoverSo.ApplyModifiedPropertiesWithoutUndo();
 
             // Wire StoryMapHudController
             StoryMapHudController hudCtrl = canvasGo.AddComponent<StoryMapHudController>();

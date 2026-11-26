@@ -30,13 +30,13 @@ namespace VRAtis.WorldMap
         [SerializeField] private Color blockedCursorColor = new Color(0.88f, 0.26f, 0.22f, 1f);
 
         [Header("Harita Sınırları")]
-        [SerializeField] private Vector2 mapBoundsMin = new Vector2(-600f, -605f);
-        [SerializeField] private Vector2 mapBoundsMax = new Vector2(560f, 550f);
+        [SerializeField] private Vector2 mapBoundsMin = new Vector2(-940f, -940f);
+        [SerializeField] private Vector2 mapBoundsMax = new Vector2(870f, 850f);
 
         [Header("Kamera Mesafe ve Açı (Warband Tarzı)")]
-        [SerializeField] private float defaultDistance = 68f;
-        [SerializeField] private float minDistance = 18f;
-        [SerializeField] private float maxDistance = 240f;
+        [SerializeField] private float defaultDistance = 82f;
+        [SerializeField] private float minDistance = 20f;
+        [SerializeField] private float maxDistance = 310f;
         [SerializeField] private float minPitchDeg = 36f;
         [SerializeField] private float maxPitchDeg = 70f;
         [SerializeField] private float defaultYawDeg = 0f;

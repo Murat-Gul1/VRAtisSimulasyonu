@@ -53,9 +53,10 @@ MonoBehaviour:
   turnSpeedDeg: 480
   arrivalDistance: 0.45
   seaLevelY: 18
-  maxWalkableSlopeDeg: 34
-  mapBoundsMin: {x: -630, y: -630}
-  mapBoundsMax: {x: 600, y: 590}
+  maxPathSlopeDeg: 23.5
+  hardCliffSlopeDeg: 42
+  mapBoundsMin: {x: -970, y: -970}
+  mapBoundsMax: {x: 900, y: 880}
   showRoutePreview: 0
   routeLineColor: {r: 0.98, g: 0.78, b: 0.28, a: 0.78}
   routeLineWidth: 1.15

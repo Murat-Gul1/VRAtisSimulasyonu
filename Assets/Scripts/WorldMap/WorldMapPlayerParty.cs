@@ -29,8 +29,8 @@ namespace VRAtis.WorldMap
         [SerializeField] private float seaLevelY = 18.0f;
         [SerializeField] private float maxPathSlopeDeg = 23.5f;
         [SerializeField] private float hardCliffSlopeDeg = 42f;
-        [SerializeField] private Vector2 mapBoundsMin = new Vector2(-630f, -630f);
-        [SerializeField] private Vector2 mapBoundsMax = new Vector2(600f, 590f);
+        [SerializeField] private Vector2 mapBoundsMin = new Vector2(-970f, -970f);
+        [SerializeField] private Vector2 mapBoundsMax = new Vector2(900f, 880f);
 
         [Header("Rota Çizgisi (Warband Tarzı)")]
         [SerializeField] private bool showRoutePreview = false;

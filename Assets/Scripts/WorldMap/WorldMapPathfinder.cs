@@ -10,7 +10,7 @@ namespace VRAtis.WorldMap
     /// </summary>
     public sealed class WorldMapPathfinder
     {
-        private const float CellSize = 5.0f;
+        private const float CellSize = 6.5f;
         private const float DiagCost = 1.41421356f;
         private const float ObstacleClearancePenalty1 = 2.10f;
         private const float ObstacleClearancePenalty2 = 0.75f;

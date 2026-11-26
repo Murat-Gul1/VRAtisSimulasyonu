@@ -17,7 +17,8 @@ namespace VRAtis.EditorTools
     /// </summary>
     public static class WorldMapTerrainBuilder
     {
-        public const float MapSizeMeters = 1600f;
+        public const float MapSizeMeters = 2400f;
+        public const float MapScale = 1.5f;
         public const float MaxTerrainHeight = 155f;
         public const float SeaLevelY = 18.0f;
 
@@ -57,25 +58,25 @@ namespace VRAtis.EditorTools
 
         private static readonly Vector2[] MainRiverControlPts =
         {
-            new Vector2(180f, 595f),
-            new Vector2(130f, 430f),
-            new Vector2(45f, 275f),
-            new Vector2(-95f, 165f),
-            new Vector2(-255f, 95f),
-            new Vector2(-425f, 35f),
-            new Vector2(-585f, -18f),
-            new Vector2(-745f, -55f)
+            new Vector2(270f, 892f),
+            new Vector2(195f, 645f),
+            new Vector2(68f, 412f),
+            new Vector2(-142f, 248f),
+            new Vector2(-382f, 142f),
+            new Vector2(-638f, 52f),
+            new Vector2(-878f, -27f),
+            new Vector2(-1118f, -82f)
         };
 
         private static readonly Vector2[] CreekControlPts =
         {
-            new Vector2(520f, -230f),
-            new Vector2(360f, -188f),
-            new Vector2(190f, -158f),
-            new Vector2(15f, -135f),
-            new Vector2(-155f, -82f),
-            new Vector2(-295f, -8f),
-            new Vector2(-395f, 46f)
+            new Vector2(780f, -345f),
+            new Vector2(540f, -282f),
+            new Vector2(285f, -237f),
+            new Vector2(22f, -202f),
+            new Vector2(-232f, -123f),
+            new Vector2(-442f, -12f),
+            new Vector2(-592f, 69f)
         };
 
         public static Terrain BuildCalradiaWorldMap(Transform parent)
@@ -214,35 +215,46 @@ namespace VRAtis.EditorTools
             // 6. Create Custom Animated URP Sea & River Water Plane
             CreateWorldMapWaterPlane(parent);
 
-            // 7. Build 4 Strategic 3D Arched Bridges across the rivers so the player can traverse the entire continent!
+            // 7. Build 6 Strategic 3D Arched Bridges across the 2400m continent's rivers!
             List<Vector2> bridgeCenters = BuildRiverBridges(parent, terrain, mainRiverSpline, creekSpline);
 
-            // 8. Build Soft Drifting Alpine Mist Veil conforming smoothly over North & East mountain slopes (zero peak clipping!)
+            // 8. Build Soft Drifting Alpine Mist Veil conforming smoothly over North & East mountain slopes
             CreateMountainEdgeMist(parent, terrainData);
 
-            // 9. Build Warband-style Biome Forests (dense forest regions + scattered groves; ZERO trees in desert, beaches, or snowy peaks!)
-            BuildWarbandForests(parent, terrain, bridgeCenters);
+            // 9. Generate Strategic 5-Faction Settlement Blueprint (5 Capitals + 19 Cities + 29 Military Bases reserved + 154 Linked Villages)
+            List<WorldMapSettlementRecord> settlements = WorldMapSettlementBuilder.GenerateStrategicBlueprint(
+                parent, terrain, bridgeCenters, mainRiverSpline, creekSpline, SeaLevelY);
+
+            // 10. Build Realistic Biome Forests (10x10 mobile chunks, clearing glades around all 154 villages & 53 reserved hub sites!)
+            BuildWarbandForests(parent, terrain, bridgeCenters, settlements);
+
+            // 11. Build ALL 4 Settlement Tiers (5 Monumental Capitals, 14 Cities, 24 Military Bases, 124 Compact Villages)
+            WorldMapSettlementBuilder.BuildAllSettlementVisuals(parent, terrain, settlements);
 
             AssetDatabase.SaveAssets();
             return terrain;
         }
 
         private static float EvaluateContinentHeight(
-            float wx,
-            float wz,
+            float worldX,
+            float worldZ,
             Vector2[] mainRiverSpline,
             Vector2[] creekSpline)
         {
+            // Normalize macro continent coordinates by MapScale (1.5x) so all coastlines, mountains, hills & basins scale proportionally to 2400m!
+            float wx = worldX / MapScale;
+            float wz = worldZ / MapScale;
+
             // Keep ~85-90% of playable landmass open & conquerable; sea, beaches & mountains frame ONLY the outer edges!
             float coastNoise = (Fbm(wx * 0.0020f + 3.1f, wz * 0.0020f + 1.7f, 3) - 0.5f) * 125f;
             float fineCoast = (Fbm(wx * 0.0052f + 9.2f, wz * 0.0052f + 4.4f, 2) - 0.5f) * 32f;
 
-            // Western coastline pushed out near outer edge (~ -665m) with gentle coastal coves & beaches
+            // Western coastline pushed out near outer edge with gentle coastal coves & beaches
             float westBay = Mathf.Exp(-Mathf.Pow((wz + 40f) / 220f, 2f)) * 55f;
             float westShoreX = -675f + westBay + coastNoise * 0.65f + fineCoast * 0.45f;
             float distFromWestSea = wx - westShoreX;
 
-            // Southern coastline pushed out near outer edge (~ -675m)
+            // Southern coastline pushed out near outer edge
             float southCove = Mathf.Exp(-Mathf.Pow((wx + 90f) / 310f, 2f)) * 52f;
             float southShoreZ = -685f + southCove + (Fbm(wx * 0.0022f + 14.1f, wz * 0.0022f + 2.3f, 3) - 0.5f) * 95f;
             float distFromSouthSea = wz - southShoreZ;
@@ -253,12 +265,13 @@ namespace VRAtis.EditorTools
             float beachSlopeT = SmoothStep(-65f, 95f, seaSignedDist);
             float baseElevation = Mathf.Lerp(7.0f, 26.5f, beachSlopeT);
 
-            // Compute spline river distances first so hills, basins & spurs flow cleanly around river valleys & bridges
+            // Compute spline river distances in true 2400m world meters so rivers & bridges keep natural width!
+            Vector2 pWorld = new Vector2(worldX, worldZ);
             Vector2 p = new Vector2(wx, wz);
-            float mainRiverDist = DistanceToPolyline(p, mainRiverSpline);
-            float creekDist = DistanceToPolyline(p, creekSpline);
+            float mainRiverDist = DistanceToPolyline(pWorld, mainRiverSpline);
+            float creekDist = DistanceToPolyline(pWorld, creekSpline);
             float minRiverDist = Mathf.Min(mainRiverDist, creekDist);
-            float riverValleyClear = SmoothStep(26f, 78f, minRiverDist);
+            float riverValleyClear = SmoothStep(32f, 92f, minRiverDist);
 
             // Expansive Southern Desert Plains (Z < -240m — stays wide, open & much flatter than the northern highlands!)
             float desertMask = SmoothStep(-205f, -365f, wz) * SmoothStep(-560f, -320f, wx) * beachSlopeT;
@@ -476,12 +489,14 @@ namespace VRAtis.EditorTools
             woodMat.SetFloat("_Metallic", 0f);
             EditorUtility.SetDirty(woodMat);
 
-            // 4 strategic crossings connecting the Heartland to every region (North, West, South Desert, East Highlands)
-            var centers = new List<Vector2>(4);
-            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_NorthHeartland", mainRiverSpline, 0.30f, width: 11.5f, terrain, stoneMat, woodMat));
-            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_WestPlains", mainRiverSpline, 0.56f, width: 12.0f, terrain, stoneMat, woodMat));
-            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_SouthDesert", creekSpline, 0.48f, width: 11.0f, terrain, stoneMat, woodMat));
-            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_EastFoothills", creekSpline, 0.22f, width: 11.0f, terrain, stoneMat, woodMat));
+            // 6 strategic crossings across the 2400m continent so armies & reinforcements reach every frontier smoothly!
+            var centers = new List<Vector2>(6);
+            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_NorthEast",     mainRiverSpline, 0.22f, width: 12.0f, terrain, stoneMat, woodMat));
+            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_NorthCentral",  mainRiverSpline, 0.40f, width: 12.5f, terrain, stoneMat, woodMat));
+            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_WestHeartland", mainRiverSpline, 0.60f, width: 12.5f, terrain, stoneMat, woodMat));
+            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_WestDelta",     mainRiverSpline, 0.78f, width: 12.5f, terrain, stoneMat, woodMat));
+            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_SouthDesert",   creekSpline,     0.52f, width: 12.0f, terrain, stoneMat, woodMat));
+            centers.Add(CreateSingleArchedBridge(bridgesRoot.transform, "Bridge_EastFoothills", creekSpline,     0.22f, width: 12.0f, terrain, stoneMat, woodMat));
             return centers;
         }
 
@@ -618,8 +633,8 @@ namespace VRAtis.EditorTools
         }
 
         private static void ComputeBiomeWeights(
-            float wx,
-            float wz,
+            float worldX,
+            float worldZ,
             float worldY,
             float steepnessDeg,
             out float wGrass,
@@ -627,6 +642,8 @@ namespace VRAtis.EditorTools
             out float wRock,
             out float wSnow)
         {
+            float wx = worldX / MapScale;
+            float wz = worldZ / MapScale;
             float biomeNoise = (Fbm(wx * 0.0045f + 1.9f, wz * 0.0045f + 5.2f, 3) - 0.5f) * 130f;
 
             // 1. Beach & Riverbank Sand
@@ -698,7 +715,7 @@ namespace VRAtis.EditorTools
             waterGo.name = "WorldMap_SeaAndRivers";
             waterGo.transform.SetParent(parent, false);
             waterGo.transform.position = new Vector3(0f, SeaLevelY, 0f);
-            waterGo.transform.localScale = new Vector3(360f, 1f, 360f);
+            waterGo.transform.localScale = new Vector3(540f, 1f, 540f);
             waterGo.isStatic = true;
             Object.DestroyImmediate(waterGo.GetComponent<Collider>());
 
@@ -723,10 +740,10 @@ namespace VRAtis.EditorTools
 
             Material mistMat = LoadOrCreateMaterial(EdgeMistMatPath, mistShader);
             mistMat.SetTexture("_NoiseTex", mistNoise);
-            mistMat.SetFloat("_NorthStartZ", 465f);
-            mistMat.SetFloat("_NorthFullZ", 665f);
-            mistMat.SetFloat("_EastStartX", 475f);
-            mistMat.SetFloat("_EastFullX", 675f);
+            mistMat.SetFloat("_NorthStartZ", 700f);
+            mistMat.SetFloat("_NorthFullZ", 1005f);
+            mistMat.SetFloat("_EastStartX", 715f);
+            mistMat.SetFloat("_EastFullX", 1020f);
             mistMat.SetFloat("_MaxOpacity", 0.96f);
             EditorUtility.SetDirty(mistMat);
 
@@ -754,8 +771,8 @@ namespace VRAtis.EditorTools
         private static Mesh BuildTerrainConformingMistMesh(TerrainData terrainData)
         {
             const int grid = 64;
-            const float minCoord = -850f;
-            const float maxCoord = 1450f;
+            const float minCoord = -1260f;
+            const float maxCoord = 2150f;
             const float halfMap = MapSizeMeters * 0.5f;
 
             int vPerSide = grid + 1;
@@ -885,7 +902,11 @@ namespace VRAtis.EditorTools
             public readonly List<int> OakTris = new List<int>(8192);
         }
 
-        private static void BuildWarbandForests(Transform parent, Terrain terrain, List<Vector2> bridgeCenters)
+        private static void BuildWarbandForests(
+            Transform parent,
+            Terrain terrain,
+            List<Vector2> bridgeCenters,
+            List<WorldMapSettlementRecord> settlements)
         {
             if (terrain == null || terrain.terrainData == null)
                 return;
@@ -961,31 +982,31 @@ namespace VRAtis.EditorTools
 
             TerrainData td = terrain.terrainData;
             Vector3 tPos = terrain.transform.position;
-            const int chunkGrid = 8; // 8x8 spatial chunks (~165m each) for automatic mobile frustum culling
-            const float minCoord = -660f;
-            const float maxCoord = 640f;
+            const int chunkGrid = 10; // 10x10 spatial chunks (~200m each) for automatic mobile frustum culling across 2400m!
+            const float minCoord = -1020f;
+            const float maxCoord = 980f;
             const float span = maxCoord - minCoord;
 
             ForestChunkBuilder[,] chunks = new ForestChunkBuilder[chunkGrid, chunkGrid];
 
-            // Dense Warband forest centers (x, z, radius, peakDensity)
+            // Dense Bannerlord forest centers scaled for the 2400m continent (x, z, radius, peakDensity)
             Vector4[] denseForests =
             {
-                new Vector4(-165f,  395f, 185f, 0.96f), // Northern Timberwoods
-                new Vector4( 320f,  330f, 175f, 0.94f), // Northeast Alpine Pinewoods
-                new Vector4(-445f, -135f, 165f, 0.92f), // Western Emerald Woods
-                new Vector4( 245f,   75f, 155f, 0.90f), // Central Riverwood
-                new Vector4(-455f,  265f, 145f, 0.88f), // Northwest Coastal Pines
-                new Vector4( 430f, -105f, 130f, 0.84f)  // Eastern Foothill Grove
+                new Vector4(-245f,  590f, 265f, 0.94f), // Northern Timberwoods (Soviet)
+                new Vector4( 480f,  495f, 250f, 0.92f), // Northeast Alpine Pinewoods (Soviet/China border)
+                new Vector4(-665f, -200f, 235f, 0.90f), // Western Emerald Woods (USA)
+                new Vector4( 365f,  110f, 220f, 0.88f), // Central Riverwood (Turkey/China)
+                new Vector4(-680f,  395f, 210f, 0.86f), // Northwest Coastal Pines (USA)
+                new Vector4( 640f, -160f, 195f, 0.84f)  // Eastern Foothill Grove (China)
             };
 
-            // Strategic open meadow clearings (x, z, radius) kept open for future cities/castles & visual contrast
+            // Strategic open meadow clearings (x, z, radius)
             Vector3[] openClearings =
             {
-                new Vector3(   0f,    0f, 82f),  // Heartland starting glade
-                new Vector3(-215f, -155f, 85f),  // Southwest meadow plain
-                new Vector3( -10f,  325f, 75f),  // North central plain
-                new Vector3( 155f, -110f, 72f)   // South-central crossroads plain
+                new Vector3(   0f,    0f, 110f), // Heartland starting glade
+                new Vector3(-320f, -230f, 115f), // Southwest meadow plain
+                new Vector3( -15f,  485f, 105f), // North central plain
+                new Vector3( 230f, -165f, 100f)  // South-central crossroads plain
             };
 
             System.Random rng = new System.Random(20261126);
@@ -1013,34 +1034,49 @@ namespace VRAtis.EditorTools
                 totalTrees++;
             }
 
-            // Jittered grid sampling (~10.5m spacing) gives rich overlapping canopies in dense woods + natural Warband scatter across plains
-            const float sampleStep = 10.5f;
-            for (float gz = minCoord + 10f; gz <= maxCoord - 10f; gz += sampleStep)
+            // Jittered grid sampling (~13.5m spacing across 2400m) keeps lush overlapping canopies while staying mobile-friendly!
+            const float sampleStep = 13.5f;
+            for (float gz = minCoord + 12f; gz <= maxCoord - 12f; gz += sampleStep)
             {
-                for (float gx = minCoord + 10f; gx <= maxCoord - 10f; gx += sampleStep)
+                for (float gx = minCoord + 12f; gx <= maxCoord - 12f; gx += sampleStep)
                 {
                     float wx = gx + ((float)rng.NextDouble() - 0.5f) * sampleStep * 0.90f;
                     float wz = gz + ((float)rng.NextDouble() - 0.5f) * sampleStep * 0.90f;
 
-                    // Keep commander start glade & all 4 bridges completely unobstructed
-                    if (wx * wx + wz * wz < 24f * 24f)
+                    // Keep commander start glade, all 6 bridges, AND all 207 settlement/village pads clear of trees!
+                    if (wx * wx + wz * wz < 28f * 28f)
                         continue;
 
-                    bool nearBridge = false;
+                    bool nearBlocked = false;
                     if (bridgeCenters != null)
                     {
                         for (int b = 0; b < bridgeCenters.Count; b++)
                         {
                             float dx = wx - bridgeCenters[b].x;
                             float dz = wz - bridgeCenters[b].y;
-                            if (dx * dx + dz * dz < 34f * 34f)
+                            if (dx * dx + dz * dz < 36f * 36f)
                             {
-                                nearBridge = true;
+                                nearBlocked = true;
                                 break;
                             }
                         }
                     }
-                    if (nearBridge)
+                    if (!nearBlocked && settlements != null)
+                    {
+                        for (int s = 0; s < settlements.Count; s++)
+                        {
+                            Vector3 sp = settlements[s].worldPosition;
+                            float clr = settlements[s].clearanceRadius;
+                            float dx = wx - sp.x;
+                            float dz = wz - sp.z;
+                            if (dx * dx + dz * dz < clr * clr)
+                            {
+                                nearBlocked = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (nearBlocked)
                         continue;
 
                     float nx = Mathf.Clamp01((wx - tPos.x) / td.size.x);
@@ -1097,11 +1133,13 @@ namespace VRAtis.EditorTools
                     }
 
                     // Pines dominate northern/eastern highlands & higher elevations; realistic leafy Oaks dominate temperate plains
+                    float swx = wx / MapScale;
+                    float swz = wz / MapScale;
                     float pineBias = Mathf.Clamp01(
-                        SmoothStep(100f, 410f, wz) * 0.58f +
-                        SmoothStep(160f, 450f, wx) * 0.38f +
+                        SmoothStep(100f, 410f, swz) * 0.58f +
+                        SmoothStep(160f, 450f, swx) * 0.38f +
                         SmoothStep(27f, 46f, worldY) * 0.45f +
-                        (Fbm(wx * 0.014f, wz * 0.014f, 2) - 0.5f) * 0.38f);
+                        (Fbm(wx * 0.011f, wz * 0.011f, 2) - 0.5f) * 0.38f);
 
                     bool isPine = (float)rng.NextDouble() < pineBias;
                     float baseScale = Mathf.Lerp(0.88f, 1.24f, denseFactor) * Mathf.Lerp(0.82f, 1.22f, (float)rng.NextDouble());

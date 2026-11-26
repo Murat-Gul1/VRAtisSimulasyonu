@@ -30,11 +30,11 @@ Material:
     m_Ints: []
     m_Floats:
     - _DriftSpeed: 0.008
-    - _EastFullX: 675
-    - _EastStartX: 475
+    - _EastFullX: 1020
+    - _EastStartX: 715
     - _MaxOpacity: 0.96
-    - _NorthFullZ: 665
-    - _NorthStartZ: 465
+    - _NorthFullZ: 1005
+    - _NorthStartZ: 700
     m_Colors:
     - _MistColor: {r: 0.76, g: 0.83, b: 0.89, a: 1}
     - _MistHighlight: {r: 0.91, g: 0.94, b: 0.96999997, a: 1}
