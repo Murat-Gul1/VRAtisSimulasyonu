@@ -5,15 +5,18 @@ namespace VRAtis.WorldMap
 {
     /// <summary>
     /// Controls the player's armed, banner-carrying commander figure on the Warband-style world map.
-    /// Listens to WorldMapCameraController.OnCursorConfirmPressed (Joystick center button / Space / Enter)
-    /// and marches smoothly toward the selected destination.
+    /// Listens to WorldMapCameraController.OnCursorConfirmPressed (Joystick center button / Space / Enter),
+    /// marches smoothly toward the selected destination, and drives Idle / Walk skeletal animations.
     /// </summary>
     [DisallowMultipleComponent]
     public class WorldMapPlayerParty : MonoBehaviour
     {
+        private static readonly int IsMovingHash = Animator.StringToHash("IsMoving");
+
         [Header("Referanslar")]
         [SerializeField] private WorldMapCameraController mapCamera;
         [SerializeField] private Transform visualRoot;
+        [SerializeField] private Animator animator;
         [SerializeField] private Transform bannerClothTransform;
 
         [Header("Harita Hareketi")]
@@ -23,10 +26,10 @@ namespace VRAtis.WorldMap
         [SerializeField] private Vector2 mapBoundsMin = new Vector2(-100f, -100f);
         [SerializeField] private Vector2 mapBoundsMax = new Vector2(100f, 100f);
 
-        [Header("Geçici Yürüyüş & Bayrak Hareketi (Mixamo Öncesi)")]
-        [SerializeField] private bool enableWalkBob = true;
+        [Header("Bayrak Rüzgârı & Yedek Yürüyüş Efekti")]
+        [SerializeField] private bool enableFallbackWalkBob = true;
         [SerializeField] private float walkBobFrequency = 9.5f;
-        [SerializeField] private float walkBobAmplitude = 0.08f;
+        [SerializeField] private float walkBobAmplitude = 0.06f;
         [SerializeField] private float bannerWindSpeed = 3.2f;
         [SerializeField] private float bannerWindAngleDeg = 4.5f;
 
@@ -37,6 +40,8 @@ namespace VRAtis.WorldMap
         private float _walkPhase;
         private Vector3 _visualBaseLocalPos;
         private Quaternion _bannerBaseLocalRot;
+        private bool _hasActiveAnimator;
+        private bool _lastAnimatorMoving;
 
         public bool IsMoving => _hasDestination;
         public Vector3 Destination => _destination;
@@ -46,6 +51,11 @@ namespace VRAtis.WorldMap
             if (mapCamera == null)
                 mapCamera = FindAnyObjectByType<WorldMapCameraController>();
 
+            if (animator == null)
+                animator = GetComponentInChildren<Animator>(true);
+
+            _hasActiveAnimator = animator != null && animator.runtimeAnimatorController != null;
+
             if (visualRoot != null)
                 _visualBaseLocalPos = visualRoot.localPosition;
 
@@ -53,6 +63,7 @@ namespace VRAtis.WorldMap
                 _bannerBaseLocalRot = bannerClothTransform.localRotation;
 
             _destination = transform.position;
+            SyncAnimatorState(force: true);
         }
 
         private void OnEnable()
@@ -75,6 +86,7 @@ namespace VRAtis.WorldMap
             float dt = Mathf.Clamp(Time.unscaledDeltaTime, 0.0001f, 0.05f);
 
             UpdateMovement(dt);
+            SyncAnimatorState(force: false);
             UpdateBannerWind();
         }
 
@@ -126,7 +138,7 @@ namespace VRAtis.WorldMap
                     next.y = 0f;
                     transform.position = next;
 
-                    if (enableWalkBob && visualRoot != null)
+                    if (!_hasActiveAnimator && enableFallbackWalkBob && visualRoot != null)
                     {
                         _walkPhase += dt * walkBobFrequency;
                         float bobY = Mathf.Abs(Mathf.Sin(_walkPhase)) * walkBobAmplitude;
@@ -136,10 +148,22 @@ namespace VRAtis.WorldMap
                 }
             }
 
-            if (visualRoot != null && (visualRoot.localPosition - _visualBaseLocalPos).sqrMagnitude > 1e-6f)
+            if (!_hasActiveAnimator && visualRoot != null && (visualRoot.localPosition - _visualBaseLocalPos).sqrMagnitude > 1e-6f)
             {
                 visualRoot.localPosition = Vector3.Lerp(visualRoot.localPosition, _visualBaseLocalPos, 1f - Mathf.Exp(-14f * dt));
             }
+        }
+
+        private void SyncAnimatorState(bool force)
+        {
+            if (!_hasActiveAnimator || animator == null)
+                return;
+
+            if (!force && _lastAnimatorMoving == _hasDestination)
+                return;
+
+            _lastAnimatorMoving = _hasDestination;
+            animator.SetBool(IsMovingHash, _hasDestination);
         }
 
         private void UpdateBannerWind()

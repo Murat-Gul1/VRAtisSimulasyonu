@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
+using UnityEditor.Animations;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -35,6 +36,7 @@ namespace VRAtis.EditorTools
         private const string CommanderFbxPath = "Assets/Models/WorldMap/PlayerCommander/WorldMapCommander.fbx";
         private const string CommanderTexDir = "Assets/Models/WorldMap/PlayerCommander/Textures";
         private const string CommanderMatDir = "Assets/Materials/WorldMap/PlayerCommander";
+        private const string CommanderAnimControllerPath = "Assets/Animations/WorldMapCommander.controller";
         private const string CommanderPrefabPath = "Assets/Prefabs/WorldMapPlayerCommander.prefab";
 
         // Tactical Military Command palette tokens
@@ -929,6 +931,8 @@ namespace VRAtis.EditorTools
 
         private static void SpawnWorldMapPlayerCommander(WorldMapCameraController mapCamCtrl)
         {
+            ConfigureCommanderFbxImporter();
+
             GameObject fbxAsset = AssetDatabase.LoadAssetAtPath<GameObject>(CommanderFbxPath);
             if (fbxAsset == null)
             {
@@ -937,7 +941,10 @@ namespace VRAtis.EditorTools
             }
 
             EnsureFolder("Assets/Materials/WorldMap", "PlayerCommander");
+            EnsureFolder("Assets", "Animations");
             EnsureFolder("Assets", "Prefabs");
+
+            AnimatorController animController = BuildCommanderAnimatorController();
 
             // Build clean URP Lit materials for soldier body, banner, pole, and rifle
             Dictionary<string, Material> matLookup = BuildCommanderMaterials();
@@ -950,19 +957,26 @@ namespace VRAtis.EditorTools
             visualInstance.name = "CommanderVisual";
             visualInstance.transform.SetParent(playerRoot.transform, false);
             visualInstance.transform.localPosition = Vector3.zero;
-            // Baked FBX already faces +Z forward in Unity so LookRotation faces movement direction and flag trails behind
+            // Armature FBX faces +Z forward natively in Unity so LookRotation faces movement direction and flag trails behind
             visualInstance.transform.localRotation = Quaternion.identity;
             // Warband campaign map scale so soldier + banner read clearly from 42m top-down camera
             visualInstance.transform.localScale = Vector3.one * 2.15f;
 
-            Transform bannerClothTr = null;
-            MeshRenderer[] renderers = visualInstance.GetComponentsInChildren<MeshRenderer>(true);
-            foreach (MeshRenderer mr in renderers)
-            {
-                if (mr.name == "BannerCloth")
-                    bannerClothTr = mr.transform;
+            Animator anim = visualInstance.GetComponent<Animator>();
+            if (anim == null)
+                anim = visualInstance.AddComponent<Animator>();
+            anim.runtimeAnimatorController = animController;
+            anim.applyRootMotion = false;
+            anim.cullingMode = AnimatorCullingMode.AlwaysAnimate;
 
-                Material[] currentMats = mr.sharedMaterials;
+            Transform bannerClothTr = null;
+            Renderer[] renderers = visualInstance.GetComponentsInChildren<Renderer>(true);
+            foreach (Renderer r in renderers)
+            {
+                if (r.name == "BannerCloth")
+                    bannerClothTr = r.transform;
+
+                Material[] currentMats = r.sharedMaterials;
                 bool replacedAny = false;
                 for (int i = 0; i < currentMats.Length; i++)
                 {
@@ -975,7 +989,7 @@ namespace VRAtis.EditorTools
                         currentMats[i] = urpMat;
                         replacedAny = true;
                     }
-                    else if (mr.name == "AssaultRifle")
+                    else if (r.name == "AssaultRifle")
                     {
                         currentMats[i] = GetOrCreateRifleFallbackMaterial(matName, currentMats[i]);
                         replacedAny = true;
@@ -983,18 +997,112 @@ namespace VRAtis.EditorTools
                 }
 
                 if (replacedAny)
-                    mr.sharedMaterials = currentMats;
+                    r.sharedMaterials = currentMats;
             }
 
             WorldMapPlayerParty party = playerRoot.AddComponent<WorldMapPlayerParty>();
             SerializedObject partySo = new SerializedObject(party);
             partySo.FindProperty("mapCamera").objectReferenceValue = mapCamCtrl;
             partySo.FindProperty("visualRoot").objectReferenceValue = visualInstance.transform;
+            partySo.FindProperty("animator").objectReferenceValue = anim;
             partySo.FindProperty("bannerClothTransform").objectReferenceValue = bannerClothTr;
             partySo.ApplyModifiedPropertiesWithoutUndo();
 
             PrefabUtility.SaveAsPrefabAsset(playerRoot, CommanderPrefabPath);
-            Debug.Log($"[MainMenuAndStorySetupTool] Silahlı ve bayraklı harita komutanı sahneye eklendi ve prefab kaydedildi: {CommanderPrefabPath}");
+            Debug.Log($"[MainMenuAndStorySetupTool] Animasyonlu (Idle/Walk) silahlı ve bayraklı komutan sahneye eklendi: {CommanderPrefabPath}");
+        }
+
+        private static void ConfigureCommanderFbxImporter()
+        {
+            ModelImporter importer = AssetImporter.GetAtPath(CommanderFbxPath) as ModelImporter;
+            if (importer == null)
+                return;
+
+            bool dirty = false;
+            if (importer.animationType != ModelImporterAnimationType.Generic)
+            {
+                importer.animationType = ModelImporterAnimationType.Generic;
+                dirty = true;
+            }
+            if (!importer.importAnimation)
+            {
+                importer.importAnimation = true;
+                dirty = true;
+            }
+
+            ModelImporterClipAnimation[] clips = importer.clipAnimations;
+            if (clips == null || clips.Length == 0)
+                clips = importer.defaultClipAnimations;
+
+            if (clips != null && clips.Length > 0)
+            {
+                bool clipDirty = importer.clipAnimations == null || importer.clipAnimations.Length == 0;
+                for (int i = 0; i < clips.Length; i++)
+                {
+                    if (!clips[i].loopTime)
+                    {
+                        clips[i].loopTime = true;
+                        clipDirty = true;
+                    }
+                }
+                if (clipDirty)
+                {
+                    importer.clipAnimations = clips;
+                    dirty = true;
+                }
+            }
+
+            if (dirty)
+                importer.SaveAndReimport();
+        }
+
+        private static AnimatorController BuildCommanderAnimatorController()
+        {
+            Object[] subAssets = AssetDatabase.LoadAllAssetsAtPath(CommanderFbxPath);
+            AnimationClip idleClip = null;
+            AnimationClip walkClip = null;
+
+            for (int i = 0; i < subAssets.Length; i++)
+            {
+                if (subAssets[i] is AnimationClip clip && !clip.name.StartsWith("__preview__"))
+                {
+                    string lower = clip.name.ToLowerInvariant();
+                    if (lower.Contains("walk"))
+                        walkClip = clip;
+                    else if (lower.Contains("idle"))
+                        idleClip = clip;
+                }
+            }
+
+            if (AssetDatabase.LoadAssetAtPath<AnimatorController>(CommanderAnimControllerPath) != null)
+                AssetDatabase.DeleteAsset(CommanderAnimControllerPath);
+
+            AnimatorController controller = AnimatorController.CreateAnimatorControllerAtPath(CommanderAnimControllerPath);
+            controller.AddParameter("IsMoving", AnimatorControllerParameterType.Bool);
+
+            AnimatorStateMachine sm = controller.layers[0].stateMachine;
+            AnimatorState idleState = sm.AddState("Idle");
+            idleState.motion = idleClip;
+            sm.defaultState = idleState;
+
+            AnimatorState walkState = sm.AddState("Walk");
+            walkState.motion = walkClip ?? idleClip;
+            walkState.speed = 1.25f;
+
+            AnimatorStateTransition toWalk = idleState.AddTransition(walkState);
+            toWalk.hasExitTime = false;
+            toWalk.duration = 0.15f;
+            toWalk.AddCondition(AnimatorConditionMode.If, 0f, "IsMoving");
+
+            AnimatorStateTransition toIdle = walkState.AddTransition(idleState);
+            toIdle.hasExitTime = false;
+            toIdle.duration = 0.20f;
+            toIdle.AddCondition(AnimatorConditionMode.IfNot, 0f, "IsMoving");
+
+            EditorUtility.SetDirty(controller);
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[MainMenuAndStorySetupTool] AnimatorController kuruldu -> Idle={(idleClip != null ? idleClip.name : "NULL")} | Walk={(walkClip != null ? walkClip.name : "NULL")}");
+            return controller;
         }
 
         private static Dictionary<string, Material> BuildCommanderMaterials()
