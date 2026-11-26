@@ -26,7 +26,7 @@ Transform:
   m_GameObject: {fileID: 4034781904494368960}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalPosition: {x: 0, y: 26.145548, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -49,11 +49,17 @@ MonoBehaviour:
   visualRoot: {fileID: 2369779439499973250}
   animator: {fileID: 6565615408491546685}
   bannerClothTransform: {fileID: 4387946417039677461}
-  moveSpeed: 12
-  turnSpeedDeg: 420
-  arrivalDistance: 0.25
-  mapBoundsMin: {x: -100, y: -100}
-  mapBoundsMax: {x: 100, y: 100}
+  moveSpeed: 19
+  turnSpeedDeg: 480
+  arrivalDistance: 0.45
+  seaLevelY: 18
+  maxWalkableSlopeDeg: 34
+  mapBoundsMin: {x: -630, y: -630}
+  mapBoundsMax: {x: 600, y: 590}
+  showRoutePreview: 0
+  routeLineColor: {r: 0.98, g: 0.78, b: 0.28, a: 0.78}
+  routeLineWidth: 1.15
+  routeGroundOffset: 0.55
   enableFallbackWalkBob: 1
   walkBobFrequency: 9.5
   walkBobAmplitude: 0.06

@@ -31,8 +31,15 @@ namespace VRAtis.EditorTools
         private const string StoryIconTexPath = "Assets/UI/Textures/StoryMapIcon.png";
         private const string GroundTexPath = "Assets/Materials/WorldMap/WorldMapGround_Tex.png";
         private const string GroundMatPath = "Assets/Materials/WorldMap/WorldMapGround_Mat.mat";
+        private const string TerrainDataPath = "Assets/Materials/WorldMap/WorldMapTerrainData.asset";
+        private const string TerrainMatPath = "Assets/Materials/WorldMap/WorldMapTerrain_Mat.mat";
+        private const string GrassLushLayerPath = "Assets/Materials/WorldMap/WorldMapGrass_Lush.terrainlayer";
+        private const string GrassWarmLayerPath = "Assets/Materials/WorldMap/WorldMapGrass_Warm.terrainlayer";
+        private const string ProjectGrassDiffPath = "Assets/Models/Environment/Ground/Textures/grass_ground_diff.jpg";
+        private const string ProjectGrassNorPath = "Assets/Models/Environment/Ground/Textures/grass_ground_nor.png";
         private const string BorderMatPath = "Assets/Materials/WorldMap/WorldMapBorder_Mat.mat";
         private const string CenterMarkerMatPath = "Assets/Materials/WorldMap/WorldMapCenter_Mat.mat";
+        private const float WorldMapSizeMeters = 1000f;
         private const string CommanderFbxPath = "Assets/Models/WorldMap/PlayerCommander/WorldMapCommander.fbx";
         private const string CommanderTexDir = "Assets/Models/WorldMap/PlayerCommander/Textures";
         private const string CommanderMatDir = "Assets/Materials/WorldMap/PlayerCommander";
@@ -238,71 +245,31 @@ namespace VRAtis.EditorTools
             RenderSettings.ambientGroundColor = new Color(0.24f, 0.25f, 0.21f, 1f);
             RenderSettings.fog = true;
             RenderSettings.fogMode = FogMode.Linear;
-            RenderSettings.fogColor = new Color(0.67f, 0.75f, 0.80f, 1f);
-            RenderSettings.fogStartDistance = 95f;
-            RenderSettings.fogEndDistance = 260f;
+            RenderSettings.fogColor = new Color(0.68f, 0.78f, 0.85f, 1f);
+            RenderSettings.fogStartDistance = 360f;
+            RenderSettings.fogEndDistance = 1220f;
 
             // 1. Directional Sun Light
             GameObject sunGo = new GameObject("Directional Light");
             Light sun = sunGo.AddComponent<Light>();
             sun.type = LightType.Directional;
-            sun.color = new Color(1.0f, 0.965f, 0.895f, 1f);
-            sun.intensity = 1.35f;
+            sun.color = new Color(1.0f, 0.960f, 0.885f, 1f);
+            sun.intensity = 1.45f;
             sun.shadows = LightShadows.Soft;
-            sunGo.transform.rotation = Quaternion.Euler(52f, -34f, 0f);
+            sunGo.transform.rotation = Quaternion.Euler(46f, -38f, 0f);
 
-            // 2. Empty Warband-Style Overworld Ground (240m x 240m flat steppe canvas)
+            // 2. Calradia-Style 1600m x 1600m Continent Terrain (Natural Sea, Beaches, Desert, Steep Mountains, Rivers — ZERO yellow border bars!)
             GameObject mapRoot = new GameObject("WorldMap_Environment");
 
-            Material groundMat = AssetDatabase.LoadAssetAtPath<Material>(GroundMatPath);
-            Material borderMat = AssetDatabase.LoadAssetAtPath<Material>(BorderMatPath);
             Material centerMat = AssetDatabase.LoadAssetAtPath<Material>(CenterMarkerMatPath);
+            Terrain worldTerrain = WorldMapTerrainBuilder.BuildCalradiaWorldMap(mapRoot.transform);
+            float centerGroundY = worldTerrain != null
+                ? worldTerrain.SampleHeight(Vector3.zero) + worldTerrain.transform.position.y
+                : WorldMapTerrainBuilder.SeaLevelY + 7f;
 
-            GameObject groundGo = GameObject.CreatePrimitive(PrimitiveType.Plane);
-            groundGo.name = "WorldMap_Ground";
-            groundGo.transform.SetParent(mapRoot.transform, false);
-            groundGo.transform.position = Vector3.zero;
-            groundGo.transform.localScale = new Vector3(24f, 1f, 24f); // 240 x 240 meters
-            groundGo.isStatic = true;
-            MeshRenderer groundRenderer = groundGo.GetComponent<MeshRenderer>();
-            if (groundRenderer != null && groundMat != null)
-            {
-                groundRenderer.sharedMaterial = groundMat;
-                groundRenderer.shadowCastingMode = ShadowCastingMode.Off;
-            }
-
-            // Subtle perimeter boundary rails at +/- 112m so map edges read clearly from above
-            CreateMapBorderRail(mapRoot.transform, "Border_North", new Vector3(0f, 0.15f, 112f), new Vector3(226f, 0.3f, 1.4f), borderMat);
-            CreateMapBorderRail(mapRoot.transform, "Border_South", new Vector3(0f, 0.15f, -112f), new Vector3(226f, 0.3f, 1.4f), borderMat);
-            CreateMapBorderRail(mapRoot.transform, "Border_East", new Vector3(112f, 0.15f, 0f), new Vector3(1.4f, 0.3f, 226f), borderMat);
-            CreateMapBorderRail(mapRoot.transform, "Border_West", new Vector3(-112f, 0.15f, 0f), new Vector3(1.4f, 0.3f, 226f), borderMat);
-
-            // Dynamic ground cursor ring (follows camera focus / joystick navigation on the map surface)
-            GameObject cursorRing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            cursorRing.name = "MapCursorRing";
-            cursorRing.transform.SetParent(mapRoot.transform, false);
-            cursorRing.transform.position = new Vector3(0f, 0.04f, 0f);
-            cursorRing.transform.localScale = new Vector3(3.2f, 0.03f, 3.2f);
-            Object.DestroyImmediate(cursorRing.GetComponent<Collider>());
-            MeshRenderer cursorMr = cursorRing.GetComponent<MeshRenderer>();
-            if (cursorMr != null && centerMat != null)
-            {
-                cursorMr.sharedMaterial = centerMat;
-                cursorMr.shadowCastingMode = ShadowCastingMode.Off;
-            }
-
-            GameObject cursorInner = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            cursorInner.name = "MapCursorInnerCutout";
-            cursorInner.transform.SetParent(cursorRing.transform, false);
-            cursorInner.transform.localPosition = new Vector3(0f, 0.4f, 0f);
-            cursorInner.transform.localScale = new Vector3(0.74f, 1.0f, 0.74f);
-            Object.DestroyImmediate(cursorInner.GetComponent<Collider>());
-            MeshRenderer cursorInnerMr = cursorInner.GetComponent<MeshRenderer>();
-            if (cursorInnerMr != null && groundMat != null)
-            {
-                cursorInnerMr.sharedMaterial = groundMat;
-                cursorInnerMr.shadowCastingMode = ShadowCastingMode.Off;
-            }
+            // Dynamic hollow ground cursor ring
+            GameObject cursorRing = CreateHollowCursorRing(mapRoot.transform, centerMat);
+            cursorRing.transform.position = new Vector3(0f, centerGroundY + 0.25f, 0f);
 
             // 2B. ESP32-S3 Rifle Joystick UDP Receiver (Port 4210)
             GameObject esp32Go = new GameObject("ESP32_RifleReceiver");
@@ -316,7 +283,7 @@ namespace VRAtis.EditorTools
             cam.backgroundColor = new Color(0.55f, 0.67f, 0.78f, 1f);
             cam.fieldOfView = 48f;
             cam.nearClipPlane = 0.5f;
-            cam.farClipPlane = 350f;
+            cam.farClipPlane = 1500f;
             camGo.AddComponent<AudioListener>();
             UniversalAdditionalCameraData urpCam = camGo.AddComponent<UniversalAdditionalCameraData>();
             urpCam.renderShadows = true;
@@ -326,15 +293,16 @@ namespace VRAtis.EditorTools
             SerializedObject camSo = new SerializedObject(mapCamCtrl);
             camSo.FindProperty("rifleReceiver").objectReferenceValue = esp32Receiver;
             camSo.FindProperty("cursorRingTransform").objectReferenceValue = cursorRing.transform;
+            camSo.FindProperty("seaLevelY").floatValue = WorldMapTerrainBuilder.SeaLevelY;
             camSo.ApplyModifiedPropertiesWithoutUndo();
 
-            // Position camera in edit mode too so Scene/Game preview immediately shows the angled top-down field
-            Quaternion initialRot = Quaternion.Euler(50f, 0f, 0f);
+            // Position camera in edit mode above the central heartland
+            Quaternion initialRot = Quaternion.Euler(48f, 0f, 0f);
             camGo.transform.rotation = initialRot;
-            camGo.transform.position = initialRot * new Vector3(0f, 0f, -42f);
+            camGo.transform.position = new Vector3(0f, centerGroundY, 0f) + initialRot * new Vector3(0f, 0f, -68f);
 
-            // 3B. Spawn Armed & Flag-Bearing Player Commander on the Map
-            SpawnWorldMapPlayerCommander(mapCamCtrl);
+            // 3B. Spawn Armed & Flag-Bearing Player Commander cleanly grounded on the central plain
+            SpawnWorldMapPlayerCommander(mapCamCtrl, centerGroundY);
 
             // 4. EventSystem
             EnsureEventSystem();
@@ -929,7 +897,7 @@ namespace VRAtis.EditorTools
             AssetDatabase.SaveAssets();
         }
 
-        private static void SpawnWorldMapPlayerCommander(WorldMapCameraController mapCamCtrl)
+        private static void SpawnWorldMapPlayerCommander(WorldMapCameraController mapCamCtrl, float spawnGroundY)
         {
             ConfigureCommanderFbxImporter();
 
@@ -950,7 +918,7 @@ namespace VRAtis.EditorTools
             Dictionary<string, Material> matLookup = BuildCommanderMaterials();
 
             GameObject playerRoot = new GameObject("WorldMap_PlayerCommander");
-            playerRoot.transform.position = Vector3.zero;
+            playerRoot.transform.position = new Vector3(0f, spawnGroundY, 0f);
             playerRoot.transform.rotation = Quaternion.identity;
 
             GameObject visualInstance = (GameObject)PrefabUtility.InstantiatePrefab(fbxAsset);
@@ -1208,6 +1176,192 @@ namespace VRAtis.EditorTools
                 importer.textureType = TextureImporterType.NormalMap;
                 importer.SaveAndReimport();
             }
+        }
+
+        private static void CreateWorldMapGrassTerrain(Transform parent)
+        {
+            EnsureFolder("Assets/Materials", "WorldMap");
+
+            // Load existing photorealistic project grass textures (zero extra APK texture bloat!)
+            Texture2D grassDiff = AssetDatabase.LoadAssetAtPath<Texture2D>(ProjectGrassDiffPath);
+            Texture2D grassNor = AssetDatabase.LoadAssetAtPath<Texture2D>(ProjectGrassNorPath);
+            if (grassDiff == null)
+                grassDiff = AssetDatabase.LoadAssetAtPath<Texture2D>(GroundTexPath);
+
+            // Two organic grass layers at non-harmonic tile scales (26m & 57m) eliminate visible tiling from above
+            TerrainLayer lushLayer = LoadOrCreateTerrainLayer(
+                GrassLushLayerPath,
+                grassDiff,
+                grassNor,
+                tileSize: new Vector2(26f, 26f),
+                diffuseTint: new Color(0.62f, 0.96f, 0.52f, 1f),
+                normalScale: 0.65f);
+
+            TerrainLayer warmLayer = LoadOrCreateTerrainLayer(
+                GrassWarmLayerPath,
+                grassDiff,
+                grassNor,
+                tileSize: new Vector2(57f, 57f),
+                diffuseTint: new Color(0.82f, 0.92f, 0.58f, 1f),
+                normalScale: 0.45f);
+
+            TerrainData terrainData = AssetDatabase.LoadAssetAtPath<TerrainData>(TerrainDataPath);
+            if (terrainData == null)
+            {
+                terrainData = new TerrainData();
+                AssetDatabase.CreateAsset(terrainData, TerrainDataPath);
+            }
+
+            terrainData.heightmapResolution = 257;
+            terrainData.alphamapResolution = 256;
+            terrainData.baseMapResolution = 512;
+            terrainData.size = new Vector3(WorldMapSizeMeters, 120f, WorldMapSizeMeters);
+
+            // Start completely flat at Y=0 (ready for sculpting mountains & rivers in the next step)
+            int hmRes = terrainData.heightmapResolution;
+            float[,] flatHeights = new float[hmRes, hmRes];
+            terrainData.SetHeights(0, 0, flatHeights);
+
+            terrainData.terrainLayers = new[] { lushLayer, warmLayer };
+
+            // Paint natural organic meadow variation (ZERO grid squares, ZERO harsh edges)
+            int alphaRes = terrainData.alphamapResolution;
+            float[,,] alphaMap = new float[alphaRes, alphaRes, 2];
+            for (int y = 0; y < alphaRes; y++)
+            {
+                float ny = y / (float)(alphaRes - 1);
+                for (int x = 0; x < alphaRes; x++)
+                {
+                    float nx = x / (float)(alphaRes - 1);
+                    float n1 = Mathf.PerlinNoise(nx * 4.5f + 1.3f, ny * 4.5f + 2.7f);
+                    float n2 = Mathf.PerlinNoise(nx * 11.0f + 7.1f, ny * 11.0f + 4.3f);
+                    float warmWeight = Mathf.Clamp01((n1 * 0.7f + n2 * 0.3f - 0.35f) * 1.45f);
+                    alphaMap[y, x, 0] = 1f - warmWeight;
+                    alphaMap[y, x, 1] = warmWeight;
+                }
+            }
+            terrainData.SetAlphamaps(0, 0, alphaMap);
+            EditorUtility.SetDirty(terrainData);
+
+            // URP Terrain Lit material
+            Shader terrainShader = Shader.Find("Universal Render Pipeline/Terrain/Lit") ?? Shader.Find("Nature/Terrain/Standard");
+            Material terrainMat = LoadOrCreateMaterial(TerrainMatPath, terrainShader);
+            EditorUtility.SetDirty(terrainMat);
+
+            GameObject terrainGo = Terrain.CreateTerrainGameObject(terrainData);
+            terrainGo.name = "WorldMap_Terrain";
+            terrainGo.transform.SetParent(parent, false);
+            // Center 1000x1000 terrain around world origin (0, 0, 0)
+            terrainGo.transform.position = new Vector3(-WorldMapSizeMeters * 0.5f, 0f, -WorldMapSizeMeters * 0.5f);
+            terrainGo.isStatic = true;
+
+            Terrain terrainComp = terrainGo.GetComponent<Terrain>();
+            if (terrainComp != null)
+            {
+                terrainComp.materialTemplate = terrainMat;
+                terrainComp.heightmapPixelError = 8f;
+                terrainComp.basemapDistance = 450f;
+                terrainComp.drawTreesAndFoliage = false;
+                terrainComp.shadowCastingMode = ShadowCastingMode.Off;
+            }
+
+            AssetDatabase.SaveAssets();
+        }
+
+        private static TerrainLayer LoadOrCreateTerrainLayer(
+            string assetPath,
+            Texture2D diffuse,
+            Texture2D normalMap,
+            Vector2 tileSize,
+            Color diffuseTint,
+            float normalScale)
+        {
+            TerrainLayer layer = AssetDatabase.LoadAssetAtPath<TerrainLayer>(assetPath);
+            if (layer == null)
+            {
+                layer = new TerrainLayer();
+                AssetDatabase.CreateAsset(layer, assetPath);
+            }
+
+            layer.diffuseTexture = diffuse;
+            layer.normalMapTexture = normalMap;
+            layer.normalScale = normalScale;
+            layer.tileSize = tileSize;
+            layer.tileOffset = Vector2.zero;
+            layer.diffuseRemapMin = Vector4.zero;
+            layer.diffuseRemapMax = new Vector4(diffuseTint.r, diffuseTint.g, diffuseTint.b, 1f);
+            layer.smoothness = 0.08f;
+            layer.metallic = 0f;
+            EditorUtility.SetDirty(layer);
+            return layer;
+        }
+
+        private static GameObject CreateHollowCursorRing(Transform parent, Material ringMat)
+        {
+            const string ringMeshPath = "Assets/Materials/WorldMap/WorldMapCursorRing_Mesh.asset";
+            if (AssetDatabase.LoadAssetAtPath<Mesh>(ringMeshPath) != null)
+                AssetDatabase.DeleteAsset(ringMeshPath);
+
+            Mesh ringMesh = BuildHollowRingMesh(innerRadius: 0.37f, outerRadius: 0.50f, segments: 48);
+            AssetDatabase.CreateAsset(ringMesh, ringMeshPath);
+            AssetDatabase.SaveAssets();
+
+            GameObject ringGo = new GameObject("MapCursorRing");
+            ringGo.transform.SetParent(parent, false);
+            ringGo.transform.position = new Vector3(0f, 0.08f, 0f);
+            ringGo.transform.localScale = new Vector3(3.6f, 1f, 3.6f);
+
+            MeshFilter mf = ringGo.AddComponent<MeshFilter>();
+            mf.sharedMesh = ringMesh;
+            MeshRenderer mr = ringGo.AddComponent<MeshRenderer>();
+            if (ringMat != null)
+            {
+                mr.sharedMaterial = ringMat;
+                mr.shadowCastingMode = ShadowCastingMode.Off;
+                mr.receiveShadows = false;
+            }
+
+            return ringGo;
+        }
+
+        private static Mesh BuildHollowRingMesh(float innerRadius, float outerRadius, int segments)
+        {
+            Mesh mesh = new Mesh { name = "WorldMapCursorRingMesh" };
+            Vector3[] verts = new Vector3[segments * 2];
+            Vector3[] norms = new Vector3[segments * 2];
+            Vector2[] uvs = new Vector2[segments * 2];
+            int[] tris = new int[segments * 6];
+
+            for (int i = 0; i < segments; i++)
+            {
+                float angle = (i / (float)segments) * Mathf.PI * 2f;
+                float cos = Mathf.Cos(angle);
+                float sin = Mathf.Sin(angle);
+
+                verts[i * 2] = new Vector3(cos * innerRadius, 0f, sin * innerRadius);
+                verts[i * 2 + 1] = new Vector3(cos * outerRadius, 0f, sin * outerRadius);
+                norms[i * 2] = Vector3.up;
+                norms[i * 2 + 1] = Vector3.up;
+                uvs[i * 2] = new Vector2(i / (float)segments, 0f);
+                uvs[i * 2 + 1] = new Vector2(i / (float)segments, 1f);
+
+                int next = (i + 1) % segments;
+                int t = i * 6;
+                // Clockwise winding in XZ plane -> front face points +Y (upward toward top-down camera)
+                tris[t] = i * 2;
+                tris[t + 1] = next * 2;
+                tris[t + 2] = next * 2 + 1;
+                tris[t + 3] = i * 2;
+                tris[t + 4] = next * 2 + 1;
+                tris[t + 5] = i * 2 + 1;
+            }
+
+            mesh.vertices = verts;
+            mesh.normals = norms;
+            mesh.uv = uvs;
+            mesh.triangles = tris;
+            mesh.RecalculateBounds();
+            return mesh;
         }
 
         private static void CreateMapBorderRail(Transform parent, string name, Vector3 pos, Vector3 scale, Material mat)

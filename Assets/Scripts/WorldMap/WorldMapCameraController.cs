@@ -22,25 +22,29 @@ namespace VRAtis.WorldMap
         [Header("Donanım ve İmleç Referansları")]
         [SerializeField] private Esp32RifleReceiver rifleReceiver;
         [SerializeField] private Transform cursorRingTransform;
-        [SerializeField] private float cursorGroundHeight = 0.04f;
-        [SerializeField] private float cursorBaseScale = 3.2f;
+        [SerializeField] private float cursorGroundHeight = 0.42f;
+        [SerializeField] private float cursorBaseScale = 4.4f;
+        [SerializeField] private float seaLevelY = 18.0f;
+        [SerializeField] private float maxWalkableSlopeDeg = 23.5f;
+        [SerializeField] private Color walkableCursorColor = new Color(0.92f, 0.70f, 0.22f, 1f);
+        [SerializeField] private Color blockedCursorColor = new Color(0.88f, 0.26f, 0.22f, 1f);
 
         [Header("Harita Sınırları")]
-        [SerializeField] private Vector2 mapBoundsMin = new Vector2(-100f, -100f);
-        [SerializeField] private Vector2 mapBoundsMax = new Vector2(100f, 100f);
+        [SerializeField] private Vector2 mapBoundsMin = new Vector2(-600f, -605f);
+        [SerializeField] private Vector2 mapBoundsMax = new Vector2(560f, 550f);
 
         [Header("Kamera Mesafe ve Açı (Warband Tarzı)")]
-        [SerializeField] private float defaultDistance = 42f;
-        [SerializeField] private float minDistance = 16f;
-        [SerializeField] private float maxDistance = 90f;
-        [SerializeField] private float minPitchDeg = 38f;
-        [SerializeField] private float maxPitchDeg = 66f;
+        [SerializeField] private float defaultDistance = 68f;
+        [SerializeField] private float minDistance = 18f;
+        [SerializeField] private float maxDistance = 240f;
+        [SerializeField] private float minPitchDeg = 36f;
+        [SerializeField] private float maxPitchDeg = 70f;
         [SerializeField] private float defaultYawDeg = 0f;
 
         [Header("Joystick Ayarları (ESP32 & Gamepad)")]
-        [SerializeField] private float joystickPanSpeed = 38f;
+        [SerializeField] private float joystickPanSpeed = 62f;
         [SerializeField] private float gamepadOrbitSpeed = 85f;
-        [SerializeField] private float gamepadZoomSpeed = 36f;
+        [SerializeField] private float gamepadZoomSpeed = 64f;
         [Range(0f, 0.35f)]
         [SerializeField] private float joystickDeadzone = 0.08f;
         [Range(1f, 2.5f)]
@@ -50,12 +54,12 @@ namespace VRAtis.WorldMap
         [SerializeField] private bool swapJoystickAxes = false;
 
         [Header("Klavye / Fare / Dokunmatik Ayarları")]
-        [SerializeField] private float keyboardPanSpeed = 34f;
+        [SerializeField] private float keyboardPanSpeed = 58f;
         [SerializeField] private float keyboardOrbitSpeed = 75f;
         [SerializeField] private float mouseDragPanFactor = 0.00145f;
         [SerializeField] private float touchDragPanFactor = 0.00155f;
         [SerializeField] private float mouseOrbitSensitivity = 0.24f;
-        [SerializeField] private float scrollZoomSpeed = 4.5f;
+        [SerializeField] private float scrollZoomSpeed = 11.0f;
         [SerializeField] private float pinchZoomSpeed = 0.08f;
         [SerializeField] private float twistOrbitSpeed = 1.0f;
         [SerializeField] private float smoothSharpness = 12f;
@@ -83,11 +87,17 @@ namespace VRAtis.WorldMap
         private bool _wasEsp32JoyButtonPressed;
         private float _cursorPulseTimer;
         private const float CursorPulseDuration = 0.22f;
+        private MeshRenderer _cursorRenderer;
+        private MaterialPropertyBlock _cursorPropBlock;
+        private bool _lastCursorWalkable = true;
+        private bool _cursorColorInitialized;
+        private static readonly int BaseColorPropId = Shader.PropertyToID("_BaseColor");
 
         public Vector3 FocusPosition => _currentFocus;
         public Vector3 CursorWorldPosition => _currentFocus;
         public float CurrentDistance => _currentDistance;
         public bool IsEsp32Connected => rifleReceiver != null && rifleReceiver.IsConnected;
+        public bool IsCursorOnWalkableLand => IsPointWalkable(_currentFocus.x, _currentFocus.z);
 
         private void Awake()
         {
@@ -97,6 +107,12 @@ namespace VRAtis.WorldMap
 
             if (rifleReceiver == null)
                 rifleReceiver = FindAnyObjectByType<Esp32RifleReceiver>();
+
+            if (cursorRingTransform != null)
+            {
+                _cursorRenderer = cursorRingTransform.GetComponent<MeshRenderer>();
+                _cursorPropBlock = new MaterialPropertyBlock();
+            }
 
             _targetFocus = Vector3.zero;
             _currentFocus = _targetFocus;
@@ -400,7 +416,7 @@ namespace VRAtis.WorldMap
         {
             GetFlatCameraBasis(out Vector3 forward, out Vector3 right);
             Vector3 move = right * stick.x + forward * stick.y;
-            float zoomScale = Mathf.Lerp(0.65f, 1.85f, GetZoomNormalized());
+            float zoomScale = Mathf.Lerp(0.55f, 2.60f, GetZoomNormalized());
             _targetFocus += move * (baseSpeed * zoomScale * dt);
         }
 
@@ -437,18 +453,24 @@ namespace VRAtis.WorldMap
 
         private void ApplyCameraAndCursorImmediate()
         {
+            float groundY = SampleGroundHeight(_currentFocus.x, _currentFocus.z);
+            float surfaceY = Mathf.Max(groundY, seaLevelY);
+            Vector3 focusAtSurface = new Vector3(_currentFocus.x, surfaceY, _currentFocus.z);
+
             float pitchDeg = Mathf.Lerp(minPitchDeg, maxPitchDeg, GetZoomNormalized());
             Quaternion camRotation = Quaternion.Euler(pitchDeg, _currentYawDeg, 0f);
             Vector3 offset = camRotation * new Vector3(0f, 0f, -_currentDistance);
 
-            transform.position = _currentFocus + offset;
+            transform.position = focusAtSurface + offset;
             transform.rotation = camRotation;
 
             if (cursorRingTransform != null)
             {
-                cursorRingTransform.position = new Vector3(_currentFocus.x, cursorGroundHeight, _currentFocus.z);
+                Vector3 surfaceNormal = groundY >= seaLevelY ? SampleGroundNormal(_currentFocus.x, _currentFocus.z) : Vector3.up;
+                cursorRingTransform.position = new Vector3(_currentFocus.x, surfaceY, _currentFocus.z) + surfaceNormal * cursorGroundHeight;
+                cursorRingTransform.rotation = Quaternion.FromToRotation(Vector3.up, surfaceNormal);
 
-                float zoomScale = Mathf.Lerp(0.70f, 1.65f, GetZoomNormalized());
+                float zoomScale = Mathf.Lerp(0.68f, 2.75f, GetZoomNormalized());
                 float pulseBoost = 1f;
                 if (_cursorPulseTimer > 0f)
                 {
@@ -457,8 +479,73 @@ namespace VRAtis.WorldMap
                 }
 
                 float diameter = cursorBaseScale * zoomScale * pulseBoost;
-                cursorRingTransform.localScale = new Vector3(diameter, 0.03f, diameter);
+                cursorRingTransform.localScale = new Vector3(diameter, 1f, diameter);
+
+                UpdateCursorWalkableColor(IsPointWalkable(_currentFocus.x, _currentFocus.z));
             }
+        }
+
+        private static Vector3 SampleGroundNormal(float x, float z)
+        {
+            if (WorldMapBridgeZone.TryGetBridgeHeight(x, z, out _))
+                return Vector3.up;
+
+            Terrain terrain = Terrain.activeTerrain;
+            if (terrain == null || terrain.terrainData == null)
+                return Vector3.up;
+
+            TerrainData td = terrain.terrainData;
+            float nx = Mathf.Clamp01((x - terrain.transform.position.x) / td.size.x);
+            float nz = Mathf.Clamp01((z - terrain.transform.position.z) / td.size.z);
+            return td.GetInterpolatedNormal(nx, nz);
+        }
+
+        private void UpdateCursorWalkableColor(bool walkable)
+        {
+            if (_cursorRenderer == null || _cursorPropBlock == null)
+                return;
+
+            if (_cursorColorInitialized && _lastCursorWalkable == walkable)
+                return;
+
+            _cursorColorInitialized = true;
+            _lastCursorWalkable = walkable;
+            _cursorRenderer.GetPropertyBlock(_cursorPropBlock);
+            _cursorPropBlock.SetColor(BaseColorPropId, walkable ? walkableCursorColor : blockedCursorColor);
+            _cursorRenderer.SetPropertyBlock(_cursorPropBlock);
+        }
+
+        public bool IsPointWalkable(float x, float z)
+        {
+            if (WorldMapBridgeZone.TryGetBridgeHeight(x, z, out _))
+                return true;
+
+            Terrain terrain = Terrain.activeTerrain;
+            if (terrain == null || terrain.terrainData == null)
+                return true;
+
+            float y = terrain.SampleHeight(new Vector3(x, 0f, z)) + terrain.transform.position.y;
+            if (y < seaLevelY + 0.35f)
+                return false;
+
+            TerrainData td = terrain.terrainData;
+            float nx = Mathf.Clamp01((x - terrain.transform.position.x) / td.size.x);
+            float nz = Mathf.Clamp01((z - terrain.transform.position.z) / td.size.z);
+            float slopeDeg = td.GetSteepness(nx, nz);
+            return slopeDeg <= maxWalkableSlopeDeg;
+        }
+
+        private static float SampleGroundHeight(float x, float z)
+        {
+            float terrainY = 0f;
+            Terrain terrain = Terrain.activeTerrain;
+            if (terrain != null)
+                terrainY = terrain.SampleHeight(new Vector3(x, 0f, z)) + terrain.transform.position.y;
+
+            if (WorldMapBridgeZone.TryGetBridgeHeight(x, z, out float bridgeY))
+                return Mathf.Max(terrainY, bridgeY);
+
+            return terrainY;
         }
 
         private static bool IsPointerOverUi(int pointerId)
