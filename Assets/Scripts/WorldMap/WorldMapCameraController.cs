@@ -21,6 +21,7 @@ namespace VRAtis.WorldMap
     {
         [Header("Donanım ve İmleç Referansları")]
         [SerializeField] private Esp32RifleReceiver rifleReceiver;
+        [SerializeField] private WorldMapPlayerParty playerParty;
         [SerializeField] private Transform cursorRingTransform;
         [SerializeField] private float cursorGroundHeight = 0.42f;
         [SerializeField] private float cursorBaseScale = 4.4f;
@@ -28,6 +29,13 @@ namespace VRAtis.WorldMap
         [SerializeField] private float maxWalkableSlopeDeg = 23.5f;
         [SerializeField] private Color walkableCursorColor = new Color(0.92f, 0.70f, 0.22f, 1f);
         [SerializeField] private Color blockedCursorColor = new Color(0.88f, 0.26f, 0.22f, 1f);
+
+        [Header("Bannerlord Karakter Takip Kamerası")]
+        [SerializeField] private bool autoCenterPlayerOnMove = true;
+        [SerializeField] private float autoFollowGlideSharpness = 5.2f;
+        [SerializeField] private float autoFollowLockSharpness = 9.5f;
+        [Range(0.05f, 0.35f)]
+        [SerializeField] private float screenCenterMargin = 0.18f;
 
         [Header("Harita Sınırları")]
         [SerializeField] private Vector2 mapBoundsMin = new Vector2(-940f, -940f);
@@ -91,6 +99,10 @@ namespace VRAtis.WorldMap
         private MaterialPropertyBlock _cursorPropBlock;
         private bool _lastCursorWalkable = true;
         private bool _cursorColorInitialized;
+        private Camera _camera;
+        private bool _isAutoFollowingPlayer;
+        private bool _isGlidingToPlayer;
+        private bool _userPannedThisFrame;
         private static readonly int BaseColorPropId = Shader.PropertyToID("_BaseColor");
 
         public Vector3 FocusPosition => _currentFocus;
@@ -98,6 +110,7 @@ namespace VRAtis.WorldMap
         public float CurrentDistance => _currentDistance;
         public bool IsEsp32Connected => rifleReceiver != null && rifleReceiver.IsConnected;
         public bool IsCursorOnWalkableLand => IsPointWalkable(_currentFocus.x, _currentFocus.z);
+        public bool IsAutoFollowingPlayer => _isAutoFollowingPlayer;
 
         private void Awake()
         {
@@ -105,8 +118,11 @@ namespace VRAtis.WorldMap
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
 
+            _camera = GetComponent<Camera>();
             if (rifleReceiver == null)
                 rifleReceiver = FindAnyObjectByType<Esp32RifleReceiver>();
+            if (playerParty == null)
+                playerParty = FindAnyObjectByType<WorldMapPlayerParty>();
 
             if (cursorRingTransform != null)
             {
@@ -143,6 +159,10 @@ namespace VRAtis.WorldMap
         {
             float dt = Mathf.Clamp(Time.unscaledDeltaTime, 0.0001f, 0.05f);
 
+            if (playerParty == null)
+                playerParty = FindAnyObjectByType<WorldMapPlayerParty>();
+
+            _userPannedThisFrame = false;
             bool confirmPressed = false;
             HandleEsp32JoystickInput(dt, ref confirmPressed);
 
@@ -157,33 +177,47 @@ namespace VRAtis.WorldMap
             }
 #endif
 
+            if (confirmPressed)
+                TriggerCursorConfirm();
+
+            UpdateBannerlordAutoFollow();
             ClampTargets();
 
-            float lerpT = 1f - Mathf.Exp(-smoothSharpness * dt);
-            _currentFocus = Vector3.Lerp(_currentFocus, _targetFocus, lerpT);
-            _currentDistance = Mathf.Lerp(_currentDistance, _targetDistance, lerpT);
-            _currentYawDeg = Mathf.LerpAngle(_currentYawDeg, _targetYawDeg, lerpT);
+            float focusSharpness = smoothSharpness;
+            if (_isAutoFollowingPlayer)
+                focusSharpness = _isGlidingToPlayer ? autoFollowGlideSharpness : autoFollowLockSharpness;
+
+            float focusLerpT = 1f - Mathf.Exp(-focusSharpness * dt);
+            float camLerpT = 1f - Mathf.Exp(-smoothSharpness * dt);
+            _currentFocus = Vector3.Lerp(_currentFocus, _targetFocus, focusLerpT);
+            _currentDistance = Mathf.Lerp(_currentDistance, _targetDistance, camLerpT);
+            _currentYawDeg = Mathf.LerpAngle(_currentYawDeg, _targetYawDeg, camLerpT);
 
             if (_cursorPulseTimer > 0f)
                 _cursorPulseTimer = Mathf.Max(0f, _cursorPulseTimer - dt);
-
-            if (confirmPressed)
-                TriggerCursorConfirm();
 
             ApplyCameraAndCursorImmediate();
         }
 
         public void FocusOn(Vector3 worldPosition)
         {
+            _isAutoFollowingPlayer = false;
+            _isGlidingToPlayer = false;
             _targetFocus = new Vector3(worldPosition.x, 0f, worldPosition.z);
             ClampTargets();
         }
 
         public void ResetView()
         {
-            _targetFocus = Vector3.zero;
+            if (playerParty == null)
+                playerParty = FindAnyObjectByType<WorldMapPlayerParty>();
+
+            Vector3 anchor = playerParty != null ? playerParty.transform.position : Vector3.zero;
+            _targetFocus = new Vector3(anchor.x, 0f, anchor.z);
             _targetDistance = Mathf.Clamp(defaultDistance, minDistance, maxDistance);
             _targetYawDeg = defaultYawDeg;
+            _isAutoFollowingPlayer = playerParty != null && playerParty.IsMoving;
+            _isGlidingToPlayer = true;
             ClampTargets();
         }
 
@@ -201,6 +235,57 @@ namespace VRAtis.WorldMap
         {
             _cursorPulseTimer = CursorPulseDuration;
             OnCursorConfirmPressed?.Invoke(_currentFocus);
+
+            // Bannerlord-style auto-recenter: if the player issued a march order while commander is off-screen/off-center,
+            // smoothly glide the camera back onto the commander so they are never lost on the map!
+            if (autoCenterPlayerOnMove && playerParty != null && playerParty.IsMoving && !IsPlayerInsideScreenCenter(screenCenterMargin))
+            {
+                _isAutoFollowingPlayer = true;
+                _isGlidingToPlayer = true;
+            }
+        }
+
+        private void UpdateBannerlordAutoFollow()
+        {
+            if (!autoCenterPlayerOnMove || playerParty == null || _userPannedThisFrame)
+                return;
+
+            Vector3 partyPos = playerParty.transform.position;
+            Vector3 flatParty = new Vector3(partyPos.x, 0f, partyPos.z);
+
+            // If commander is marching and begins approaching the edge of the screen, smoothly catch up automatically
+            if (!_isAutoFollowingPlayer && playerParty.IsMoving && !IsPlayerInsideScreenCenter(screenCenterMargin))
+            {
+                _isAutoFollowingPlayer = true;
+                _isGlidingToPlayer = true;
+            }
+
+            if (!_isAutoFollowingPlayer)
+                return;
+
+            _targetFocus = flatParty;
+            float distToParty = Vector2.Distance(new Vector2(_currentFocus.x, _currentFocus.z), new Vector2(flatParty.x, flatParty.z));
+
+            if (_isGlidingToPlayer && distToParty <= 4.5f)
+                _isGlidingToPlayer = false;
+
+            // Once commander reaches destination and camera has smoothly arrived on them, release follow lock cleanly
+            if (!playerParty.IsMoving && distToParty <= 1.5f)
+            {
+                _isAutoFollowingPlayer = false;
+                _isGlidingToPlayer = false;
+            }
+        }
+
+        private bool IsPlayerInsideScreenCenter(float margin)
+        {
+            if (playerParty == null || _camera == null)
+                return true;
+
+            Vector3 vp = _camera.WorldToViewportPoint(playerParty.transform.position + new Vector3(0f, 3f, 0f));
+            return vp.z > 0.1f &&
+                   vp.x >= margin && vp.x <= (1f - margin) &&
+                   vp.y >= margin && vp.y <= (1f - margin);
         }
 
         private void HandleRecenterPressed(uint _)
@@ -414,6 +499,10 @@ namespace VRAtis.WorldMap
 
         private void MoveFocusAlongStick(Vector2 stick, float baseSpeed, float dt)
         {
+            _isAutoFollowingPlayer = false;
+            _isGlidingToPlayer = false;
+            _userPannedThisFrame = true;
+
             GetFlatCameraBasis(out Vector3 forward, out Vector3 right);
             Vector3 move = right * stick.x + forward * stick.y;
             float zoomScale = Mathf.Lerp(0.55f, 2.60f, GetZoomNormalized());
@@ -424,6 +513,10 @@ namespace VRAtis.WorldMap
         {
             if (screenDelta.sqrMagnitude <= 0.0001f)
                 return;
+
+            _isAutoFollowingPlayer = false;
+            _isGlidingToPlayer = false;
+            _userPannedThisFrame = true;
 
             GetFlatCameraBasis(out Vector3 forward, out Vector3 right);
             float scale = _currentDistance * panFactor;
