@@ -297,6 +297,21 @@ namespace VRAtis.Hardware
             return _posInitialized;
         }
 
+        /// <summary>
+        /// Shifts the tracked rifle world position by the player's locomotion delta so the weapon
+        /// moves 1:1 with the shooter's body without exponential lag or drifting behind in fallback mode.
+        /// </summary>
+        public void ApplyPlayerWorldTranslation(Vector3 worldDelta)
+        {
+            if (worldDelta.sqrMagnitude <= 1e-12f)
+                return;
+
+            if (_posInitialized)
+                _smoothedWorldPos += worldDelta;
+
+            transform.position += worldDelta;
+        }
+
         // Webcam & background worker state
         private WebCamTexture _webCamTex;
         private int _rawCamW;
@@ -365,6 +380,7 @@ namespace VRAtis.Hardware
 
         // Calibration & 120Hz smoothing state
         private CalibrationPhase _calibrationPhase = CalibrationPhase.Idle;
+        private bool _guidedRecenterRequested;
         private float _calPhaseTimer;
         private float _steadyHoldTimer;
         private float _steadyLostSeconds;
@@ -438,13 +454,19 @@ namespace VRAtis.Hardware
             _zeroTargetCamLocalOffset = readyLocalOffsetMeters;
             _fallbackRelBodyOffset = readyLocalOffsetMeters;
             _smoothedWorldPos = transform.position;
-            _calibrationPhase = IsTrackingRuntimeSupported ? CalibrationPhase.WaitingForLeds : CalibrationPhase.Idle;
+            _guidedRecenterRequested = false;
+            _calibrationPhase = CalibrationPhase.Idle;
         }
 
         private void OnEnable()
         {
-            if (enableOpticalTracking)
+            if (enableOpticalTracking && ShouldKeepRearCameraActive())
                 TryStartCamera();
+        }
+
+        private bool ShouldKeepRearCameraActive()
+        {
+            return (rifleReceiver == null || rifleReceiver.IsConnected) || _previewRequested;
         }
 
         private void OnDisable()
@@ -468,6 +490,8 @@ namespace VRAtis.Hardware
         public void SetPreviewActive(bool active)
         {
             _previewRequested = active;
+            if (active && enableOpticalTracking)
+                TryStartCamera();
         }
 
         /// <summary>
@@ -476,6 +500,8 @@ namespace VRAtis.Hardware
         /// </summary>
         public void RecenterOpticalZero(bool startGuidedCountdown = true)
         {
+            bool isRifleHardwareConnected = rifleReceiver != null && rifleReceiver.IsConnected;
+
             if (headCameraTransform != null)
             {
                 Vector3 flatFwd = new Vector3(headCameraTransform.forward.x, 0f, headCameraTransform.forward.z);
@@ -483,6 +509,15 @@ namespace VRAtis.Hardware
                 {
                     _bodyYawDeg = Mathf.Atan2(flatFwd.x, flatFwd.z) * Mathf.Rad2Deg;
                     _bodyYawInitialized = true;
+                }
+
+                // When ESP32/rifle is not connected, keep resting virtual rifle anchored cleanly at the new forward bench pose
+                if (!isRifleHardwareConnected)
+                {
+                    Vector3 headOrigin = _headTracker != null ? _headTracker.ReadyWorldPosition : headCameraTransform.position;
+                    _smoothedWorldPos = headOrigin + Quaternion.Euler(0f, _bodyYawDeg, 0f) * readyLocalOffsetMeters;
+                    _posInitialized = true;
+                    transform.position = _smoothedWorldPos;
                 }
             }
 
@@ -493,7 +528,21 @@ namespace VRAtis.Hardware
 
             if (!IsTrackingRuntimeSupported)
             {
+                _guidedRecenterRequested = false;
                 _calibrationPhase = CalibrationPhase.Idle;
+                return;
+            }
+
+            // Do not start guided LED calibration countdown or overwrite head yaw later when ESP32/rifle is not connected
+            if (startGuidedCountdown && rifleReceiver != null && !isRifleHardwareConnected)
+            {
+                _guidedRecenterRequested = false;
+                _pendingZeroCapture = false;
+                _hasCalibratedZero = false;
+                _hasStableLock = false;
+                _hasLastAcceptedRaw = false;
+                _calibrationPhase = CalibrationPhase.Idle;
+                ResetOpticalYawFusionState();
                 return;
             }
 
@@ -513,6 +562,7 @@ namespace VRAtis.Hardware
                 _smoothedLocalOffset = readyLocalOffsetMeters;
                 _hasCalibratedZero = true;
                 _pendingZeroCapture = false;
+                _guidedRecenterRequested = false;
                 _calibrationPhase = CalibrationPhase.CompletedBanner;
                 _calPhaseTimer = completedBannerDurationSeconds;
                 ResetOpticalYawFusionState();
@@ -520,6 +570,7 @@ namespace VRAtis.Hardware
             }
             else
             {
+                _guidedRecenterRequested = startGuidedCountdown;
                 _pendingZeroCapture = false;
                 _zeroAvgCount = 0;
                 _steadyHoldTimer = 0f;
@@ -552,6 +603,15 @@ namespace VRAtis.Hardware
 
             if (!enableOpticalTracking)
                 return;
+
+            // Keep Android Camera2 / ImageReader completely stopped while ESP32 is disconnected and preview is closed
+            // so 30 Hz external OES camera buffer updates never interrupt the 120 Hz VR render thread.
+            if (!ShouldKeepRearCameraActive())
+            {
+                if (_webCamTex != null)
+                    StopCamera();
+                return;
+            }
 
             if (_webCamTex == null)
             {
@@ -671,8 +731,22 @@ namespace VRAtis.Hardware
 
             float dt = Mathf.Clamp(Time.unscaledDeltaTime, 0.001f, 0.05f);
 
+            bool allowLiveOpticalLock = (rifleReceiver == null || rifleReceiver.IsConnected) || _previewRequested;
+            if (!allowLiveOpticalLock)
+            {
+                gotNewResult = false;
+                detectedNow = false;
+                IsLedAFound = false;
+                IsLedBFound = false;
+                _hasStableLock = false;
+                _guidedRecenterRequested = false;
+                if (_calibrationPhase != CalibrationPhase.Idle)
+                    _calibrationPhase = CalibrationPhase.Idle;
+            }
+
             if (!enableOpticalTracking)
             {
+                _guidedRecenterRequested = false;
                 _calibrationPhase = CalibrationPhase.Idle;
             }
             else if (_calibrationPhase == CalibrationPhase.PreparingHeadset)
@@ -837,13 +911,14 @@ namespace VRAtis.Hardware
                     _steadyHoldTimer += dt;
                     if (_steadyHoldTimer >= steadyHoldSeconds)
                     {
-                        if (_headTracker != null)
+                        if (_guidedRecenterRequested && _headTracker != null)
                         {
                             _headTracker.RecenterHeadYawOnly();
                             Vector3 reFwd = new Vector3(headCameraTransform.forward.x, 0f, headCameraTransform.forward.z);
                             if (reFwd.sqrMagnitude > 1e-4f)
                                 camFlatYawDeg = Mathf.Atan2(reFwd.x, reFwd.z) * Mathf.Rad2Deg;
                         }
+                        _guidedRecenterRequested = false;
 
                         _zeroRawCamPos = _startupCandidateRawPos;
                         _zeroTargetCamLocalOffset = readyLocalOffsetMeters;
@@ -1705,6 +1780,7 @@ namespace VRAtis.Hardware
             int count = 0;
             int hotCorePx = 0;
             int brightPx = 0;
+            int maxPeakC = 0;
             int maxDom = 0;
             float sumX = 0f;
             float sumY = 0f;
@@ -1728,6 +1804,8 @@ namespace VRAtis.Hardware
                 int g = px.g;
                 int b = px.b;
                 int maxC = r > g ? (r > b ? r : b) : (g > b ? g : b);
+                if (maxC > maxPeakC)
+                    maxPeakC = maxC;
                 int dom = checkRed ? (r - (g > b ? g : b))
                     : (checkBlue ? (b - (r > g ? r : g)) : (g - (r > b ? r : b)));
                 if (dom < 0)
@@ -1774,6 +1852,11 @@ namespace VRAtis.Hardware
             float quality = (hotCorePx * 260f + brightPx * 45f + maxDom * 6f * areaScale + Mathf.Min(count, countCap) * 2f) / areaScale;
             if (count > glarePx)
                 quality *= glarePx / (float)count;
+
+            // Reject dull painted room objects/walls that lack an emissive LED peak brightness
+            int minEmissivePeak = Mathf.Max(_snapMinBright + 35, 125);
+            if (maxPeakC < minEmissivePeak)
+                count = 0;
 
             return new BlobCandidate
             {

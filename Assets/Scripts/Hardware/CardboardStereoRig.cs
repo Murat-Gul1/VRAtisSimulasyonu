@@ -16,14 +16,14 @@ namespace VRAtis.Hardware
     [RequireComponent(typeof(Camera))]
     public class CardboardStereoRig : MonoBehaviour
     {
-        private const string PrefsLensSpacingKey = "VRAtis_LensSpacingMm_V2";
+        private const string PrefsLensSpacingKey = "VRAtis_LensSpacingMm_V3";
         private const int BackdropSwapchainClearFrames = 8;
-        public const float DefaultLensSpacingMm = 66f;
+        public const float DefaultLensSpacingMm = 74f;
 
         public static bool IsStereoSplitActive { get; private set; }
-        public static Rect LeftEyeViewportNorm { get; private set; } = new Rect(0.11f, 0f, 0.39f, 1f);
-        public static Rect RightEyeViewportNorm { get; private set; } = new Rect(0.5f, 0f, 0.39f, 1f);
-        public static float ActiveLensSpacingMm { get; private set; } = 66f;
+        public static Rect LeftEyeViewportNorm { get; private set; } = new Rect(0.02f, 0f, 0.48f, 1f);
+        public static Rect RightEyeViewportNorm { get; private set; } = new Rect(0.5f, 0f, 0.48f, 1f);
+        public static float ActiveLensSpacingMm { get; private set; } = 74f;
         public static float DetectedPhoneWidthMm { get; private set; } = 154f;
 
         [Header("VR Ekran Bölme (Cardboard / VR Shinecon)")]
@@ -34,9 +34,9 @@ namespace VRAtis.Hardware
         [SerializeField] private bool allowVKeyToggle = true;
 
         [Header("VR Kutu Optik & Ekran Hizalama (Çatallanma Önleme)")]
-        [Tooltip("VR kutusundaki sol ve sağ mercek merkezleri arası fiziksel mesafe (mm). 66 mm olarak sabitlendi.")]
-        [Range(52f, 74f)]
-        [SerializeField] private float lensCenterSpacingMm = 66f;
+        [Tooltip("VR kutusundaki sol ve sağ mercek merkezleri arası fiziksel mesafe (mm). Varsayılan 74 mm.")]
+        [Range(52f, 78f)]
+        [SerializeField] private float lensCenterSpacingMm = 74f;
 
         [Tooltip("Telefonda gerçek fiziksel ekran DPI'sını (Android DisplayMetrics.xdpi) okuyarak ekran enini hesaplar.")]
         [SerializeField] private bool autoDetectPhysicalPhoneWidth = true;
@@ -127,7 +127,7 @@ namespace VRAtis.Hardware
 
         public void SetLensCenterSpacingMm(float spacingMm, bool persistToPrefs = true)
         {
-            lensCenterSpacingMm = Mathf.Clamp(spacingMm, 52f, 74f);
+            lensCenterSpacingMm = Mathf.Clamp(spacingMm, 52f, 78f);
             if (persistToPrefs)
             {
                 PlayerPrefs.SetFloat(PrefsLensSpacingKey, lensCenterSpacingMm);
@@ -153,7 +153,7 @@ namespace VRAtis.Hardware
                 _mainCam.useOcclusionCulling = false;
 
             if (PlayerPrefs.HasKey(PrefsLensSpacingKey))
-                lensCenterSpacingMm = Mathf.Clamp(PlayerPrefs.GetFloat(PrefsLensSpacingKey, lensCenterSpacingMm), 52f, 74f);
+                lensCenterSpacingMm = Mathf.Clamp(PlayerPrefs.GetFloat(PrefsLensSpacingKey, lensCenterSpacingMm), 52f, 78f);
 
             _cachedPhysicalWidthMm = MeasurePhysicalPhoneWidthMm();
             DetectedPhoneWidthMm = _cachedPhysicalWidthMm;
@@ -447,6 +447,10 @@ namespace VRAtis.Hardware
             if (eyeCam == null || _mainCam == null)
                 return;
 
+            // On mobile stereoscopic VR, keep both eye passes strictly inside ARM Mali Tile SRAM (on-chip 2x MSAA,
+            // zero HDR/Bloom/SMAA external RAM multi-pass blits) so dual-eye rendering locks at 120 FPS (<8.3 ms).
+            bool mobileStereoFastPath = Application.isMobilePlatform;
+
             eyeCam.clearFlags = _mainCam.clearFlags;
             eyeCam.backgroundColor = _mainCam.backgroundColor;
             eyeCam.cullingMask = _mainCam.cullingMask;
@@ -454,7 +458,7 @@ namespace VRAtis.Hardware
             eyeCam.farClipPlane = _mainCam.farClipPlane;
             eyeCam.fieldOfView = Mathf.Clamp(vrVerticalFov + _dynamicFovDeltaDeg, 35f, 100f);
             eyeCam.depth = _mainCam.depth;
-            eyeCam.allowHDR = _mainCam.allowHDR;
+            eyeCam.allowHDR = !mobileStereoFastPath && _mainCam.allowHDR;
             eyeCam.allowMSAA = _mainCam.allowMSAA;
             eyeCam.useOcclusionCulling = false;
             eyeCam.rect = viewportRect;
@@ -463,15 +467,15 @@ namespace VRAtis.Hardware
             if (eyeUrp != null && _mainUrpData != null)
             {
                 eyeUrp.renderShadows = _mainUrpData.renderShadows;
-                eyeUrp.renderPostProcessing = _mainUrpData.renderPostProcessing;
-                eyeUrp.antialiasing = _mainUrpData.antialiasing;
+                eyeUrp.renderPostProcessing = !mobileStereoFastPath && _mainUrpData.renderPostProcessing;
+                eyeUrp.antialiasing = mobileStereoFastPath ? AntialiasingMode.None : _mainUrpData.antialiasing;
                 eyeUrp.antialiasingQuality = _mainUrpData.antialiasingQuality;
-                eyeUrp.volumeLayerMask = _mainUrpData.volumeLayerMask;
+                eyeUrp.volumeLayerMask = mobileStereoFastPath ? (LayerMask)0 : _mainUrpData.volumeLayerMask;
                 eyeUrp.volumeTrigger = transform;
                 eyeUrp.requiresDepthOption = CameraOverrideOption.Off;
                 eyeUrp.requiresColorOption = CameraOverrideOption.Off;
                 eyeUrp.stopNaN = false;
-                eyeUrp.dithering = false;
+                eyeUrp.dithering = !mobileStereoFastPath && _mainUrpData.dithering;
             }
         }
 

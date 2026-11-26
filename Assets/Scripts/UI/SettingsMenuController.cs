@@ -930,6 +930,12 @@ namespace VRAtis.UI
                 UiView view = _views[v];
                 if (view.LensValueText != null)
                     view.LensValueText.text = $"{lensMm:F0} mm";
+                if (view.LensResetButton != null)
+                {
+                    Text resetLbl = view.LensResetButton.GetComponentInChildren<Text>(true);
+                    if (resetLbl != null)
+                        resetLbl.text = $"{CardboardStereoRig.DefaultLensSpacingMm:F0} mm";
+                }
                 if (view.ScreenWidthText != null)
                     view.ScreenWidthText.text = $"Ekran: {phoneMm:F0} mm";
                 if (view.VrSplitCheckbox != null)

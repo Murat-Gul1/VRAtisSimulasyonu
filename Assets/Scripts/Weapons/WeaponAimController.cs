@@ -116,6 +116,19 @@ namespace VRAtis.Weapons
             _keyAimActive = active;
         }
 
+        /// <summary>
+        /// Keeps cached ready-stance fallback positions synchronized when the player locomotes across the range.
+        /// </summary>
+        public void ApplyPlayerWorldTranslation(Vector3 worldDelta)
+        {
+            if (worldDelta.sqrMagnitude <= 1e-12f)
+                return;
+
+            _fallbackReadyPos += worldDelta;
+            _initialRifleWorldPos += worldDelta;
+            _activeBaseRifleWorldPos += worldDelta;
+        }
+
         private void Update()
         {
             if (rifleReceiver != null)

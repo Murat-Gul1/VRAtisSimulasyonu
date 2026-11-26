@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
@@ -21,6 +22,7 @@ namespace VRAtis.Hardware
         [Tooltip("Sıfırlama (R) sırasında kamerayla senkron hizalanacak tüfek kontrolcüsü.")]
         [SerializeField] private RifleOrientationController rifleOrientationController;
         [SerializeField] private OpticalRifleTracker opticalTracker;
+        [SerializeField] private Esp32RifleReceiver rifleReceiver;
 
         [Header("Mobil Kafa Takibi (200 Hz GameRotationVector + 1-Euro Filtre)")]
         [Tooltip("Android açılışında ekranı yatay Cardboard (LandscapeLeft) kilidine ve uyku modunu kapalıya alır.")]
@@ -66,6 +68,24 @@ namespace VRAtis.Hardware
 
         private static readonly Quaternion AttitudeBaseRotation = Quaternion.Euler(90f, 0f, 0f);
         private static readonly Quaternion Roll180Rotation = Quaternion.Euler(0f, 0f, 180f);
+        private const float HalfSqrt2 = 0.70710678f;
+        private static readonly Quaternion ScreenRotLandscapeLeft = new Quaternion(0f, 0f, HalfSqrt2, -HalfSqrt2);
+        private static readonly Quaternion ScreenRotLandscapeRight = new Quaternion(0f, 0f, -HalfSqrt2, -HalfSqrt2);
+        private static readonly Quaternion ScreenRotPortraitUpsideDown = new Quaternion(0f, 0f, 1f, 0f);
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        [DllImport("__Internal")]
+        private static extern int vratis_sensor_start(int compassMode);
+
+        [DllImport("__Internal")]
+        private static extern void vratis_sensor_stop();
+
+        [DllImport("__Internal")]
+        private static extern void vratis_sensor_set_compass_mode(int compassMode);
+
+        [DllImport("__Internal")]
+        private static extern int vratis_sensor_get_pose(out Quaternion outQuatEnu, out Vector3 outGyroRadSec, out uint outSeq);
+#endif
 
         public static bool IsLandscapeRightActive { get; private set; }
 
@@ -93,6 +113,9 @@ namespace VRAtis.Hardware
         private UnityEngine.InputSystem.Gyroscope _activeGyro;
 #endif
         private bool _gyroHasValidReadings;
+        private bool _usingNativeAndroidSensor;
+        private Vector3 _latestNativeDeviceGyroRadSec;
+        private int _lastBeforeRenderLatchedFrame = -1;
         private Quaternion _lastWorldSample = Quaternion.identity;
         private Quaternion _lastTargetSample = Quaternion.identity;
         private Quaternion _smoothedHeadRot = Quaternion.identity;
@@ -107,6 +130,7 @@ namespace VRAtis.Hardware
         private const string CompassNorthPrefKey = "VRAtis_PhoneCompass9DOF_v3";
         private bool _pendingSeamlessSensorSwitch;
         private Vector3 _seamlessTargetFlatFwd = Vector3.forward;
+        private bool _pendingHardwareRecenter;
 
         public bool IsUsingMobileSensor => _sensorReady;
         public bool UseCompassNorthLock
@@ -118,6 +142,16 @@ namespace VRAtis.Hardware
         public float EstimatedHeadSpeedDegPerSec => _estimatedHeadSpeedDegPerSec;
         public Vector3 ReadyWorldPosition => _readyPosition;
         public Quaternion ReadyWorldRotation => _smoothedHeadRot;
+
+        /// <summary>
+        /// Moves the shooter's world head/eye anchor when locomoting across the range so
+        /// Main Camera, OpticalRifleTracker, and WeaponAimController (ADS) stay 100% locked together.
+        /// </summary>
+        public void SetReadyWorldPosition(Vector3 worldPos)
+        {
+            _readyPosition = worldPos;
+            transform.position = worldPos;
+        }
 
         private void Awake()
         {
@@ -141,6 +175,11 @@ namespace VRAtis.Hardware
                 rifleOrientationController = FindAnyObjectByType<RifleOrientationController>();
             if (opticalTracker == null)
                 opticalTracker = FindAnyObjectByType<OpticalRifleTracker>();
+            if (rifleReceiver == null)
+                rifleReceiver = FindAnyObjectByType<Esp32RifleReceiver>();
+
+            if (Application.isPlaying && GetComponent<PlayerLocomotionController>() == null)
+                gameObject.AddComponent<PlayerLocomotionController>();
 
             Vector3 flatFwd = new Vector3(transform.forward.x, 0f, transform.forward.z);
             if (flatFwd.sqrMagnitude > 1e-4f)
@@ -155,8 +194,11 @@ namespace VRAtis.Hardware
         {
             if (Application.isMobilePlatform)
             {
-                QualitySettings.vSyncCount = 0;
+                // Lock 1:1 to Choreographer/Swappy hardware VSync and explicitly request the 120 Hz Display.Mode
+                // so Unity never drops uneven frames (e.g. 120 FPS unsynced into a 60 Hz SurfaceView).
+                QualitySettings.vSyncCount = 1;
                 Application.targetFrameRate = 120;
+                RequestHighRefreshDisplayModeOnAndroid();
 
                 if (lockLandscapeOnMobile)
                 {
@@ -182,13 +224,66 @@ namespace VRAtis.Hardware
             }
 #endif
 
+            if (rifleReceiver == null)
+                rifleReceiver = FindAnyObjectByType<Esp32RifleReceiver>();
+            if (rifleReceiver != null)
+            {
+                rifleReceiver.OnRecenterButtonPressed -= HandleHardwareRecenterButtonPressed;
+                rifleReceiver.OnRecenterButtonPressed += HandleHardwareRecenterButtonPressed;
+            }
+
             EnablePhoneSensor();
             Application.onBeforeRender += OnBeforeRenderHeadTrack;
         }
 
         private void OnDisable()
         {
+            if (rifleReceiver != null)
+                rifleReceiver.OnRecenterButtonPressed -= HandleHardwareRecenterButtonPressed;
+
             Application.onBeforeRender -= OnBeforeRenderHeadTrack;
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_usingNativeAndroidSensor)
+            {
+                try { vratis_sensor_stop(); } catch { }
+                _usingNativeAndroidSensor = false;
+            }
+#endif
+        }
+
+        private void OnApplicationPause(bool pauseStatus)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (pauseStatus)
+            {
+                if (_usingNativeAndroidSensor)
+                {
+                    try { vratis_sensor_stop(); } catch { }
+                    _usingNativeAndroidSensor = false;
+                }
+            }
+            else
+            {
+                if (_hasZeroedSensor)
+                {
+                    Vector3 curFwd = _smoothedHeadRot * Vector3.forward;
+                    curFwd.y = 0f;
+                    _seamlessTargetFlatFwd = curFwd.sqrMagnitude > 1e-4f
+                        ? curFwd.normalized
+                        : (_initialForwardYaw * Vector3.forward);
+                    _pendingSeamlessSensorSwitch = true;
+                }
+                RequestHighRefreshDisplayModeOnAndroid();
+                EnablePhoneSensor();
+            }
+#endif
+        }
+
+        private void HandleHardwareRecenterButtonPressed(uint pressSeq)
+        {
+            _pendingHardwareRecenter = true;
+            Debug.Log($"[HeadTrackingCameraController] Tüfek fiziksel sıfırlama butonu (GPIO 18) basıldı (#{pressSeq}) -> 2-parmak sıfırlama başlatılıyor.");
         }
 
         private void Update()
@@ -202,6 +297,12 @@ namespace VRAtis.Hardware
                 _orientationSwitchCooldown -= rawDt;
 
             bool wantRecenter = false;
+            if (_pendingHardwareRecenter)
+            {
+                _pendingHardwareRecenter = false;
+                wantRecenter = true;
+                _twoFingerCooldown = 0.9f;
+            }
 #if ENABLE_INPUT_SYSTEM
             if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
                 wantRecenter = true;
@@ -347,6 +448,13 @@ namespace VRAtis.Hardware
                     _smoothedHeadRot = Quaternion.Slerp(predictedHeadRot, effectiveTargetRot, t);
                     transform.rotation = _smoothedHeadRot;
                 }
+                else if (_usingNativeAndroidSensor)
+                {
+                    // Native NDK 400 Hz Bortz + Exact Lie-Group Quaternion AHRS already integrates raw MEMS gyro
+                    // up to CLOCK_BOOTTIME with zero small-angle deadzone and zero OEM rubberband: apply 1:1.
+                    _smoothedHeadRot = targetRot;
+                    transform.rotation = _smoothedHeadRot;
+                }
                 else
                 {
                     // Hızlı dönüşlerde 0 ms birebir tepki; kafa yavaşlayıp dururken Android HAL sensör
@@ -381,6 +489,8 @@ namespace VRAtis.Hardware
                 transform.rotation = _smoothedHeadRot;
                 if (rifleOrientationController != null)
                     rifleOrientationController.RecenterToHeadForward();
+                if (opticalTracker != null)
+                    opticalTracker.RecenterOpticalZero();
                 return;
             }
 
@@ -392,27 +502,36 @@ namespace VRAtis.Hardware
             if (!_sensorReady || !_hasZeroedSensor)
                 return;
 
+            // Latch the sub-millisecond render pose ONCE per Unity frame so Left Eye and Right Eye cameras
+            // in stereoscopic VR render with the exact identical binocular orientation.
+            int curFrame = Time.frameCount;
+            if (_lastBeforeRenderLatchedFrame == curFrame)
+            {
+                transform.rotation = _smoothedHeadRot;
+                return;
+            }
+            _lastBeforeRenderLatchedFrame = curFrame;
+
             if (TryReadPhoneAttitude(out Quaternion worldHeadRot))
             {
                 if (_isRoll180Compensated)
                     worldHeadRot = worldHeadRot * Roll180Rotation;
 
                 Quaternion targetRot = _sensorYawOffset * worldHeadRot;
-                ComputeExactAngleAxis(_lastTargetSample, targetRot, out float lateDeltaDeg, out _);
-                if (lateDeltaDeg > 0.0004f && lateDeltaDeg < 25f)
+                ComputeExactAngleAxis(_smoothedHeadRot, targetRot, out float lateGapDeg, out _);
+                if (lateGapDeg > 0.0001f && lateGapDeg < 25f)
                 {
-                    _lastWorldSample = worldHeadRot;
-                    _lastTargetSample = targetRot;
-                    _elapsedSinceSample = 0f;
-
                     if (enableAdaptiveSmoothing && !directZeroLagMode)
                     {
                         float lateBlend = Mathf.Clamp01(_smoothedCutoff * 0.004f);
                         _smoothedHeadRot = Quaternion.Slerp(_smoothedHeadRot, targetRot, lateBlend);
                     }
+                    else if (_usingNativeAndroidSensor)
+                    {
+                        _smoothedHeadRot = targetRot;
+                    }
                     else
                     {
-                        ComputeExactAngleAxis(_smoothedHeadRot, targetRot, out float lateGapDeg, out _);
                         if (_estimatedHeadSpeedDegPerSec >= 24f || lateGapDeg > 2.5f)
                         {
                             _smoothedHeadRot = targetRot;
@@ -606,7 +725,7 @@ namespace VRAtis.Hardware
 
         public void SetCompassNorthLock(bool enable)
         {
-            if (useCompassNorthLock == enable && _activeSensor != null)
+            if (useCompassNorthLock == enable && (_usingNativeAndroidSensor || _activeSensor != null))
                 return;
 
             useCompassNorthLock = enable;
@@ -624,6 +743,12 @@ namespace VRAtis.Hardware
                 _pendingSeamlessSensorSwitch = true;
             }
 
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_usingNativeAndroidSensor)
+            {
+                try { vratis_sensor_set_compass_mode(enable ? 1 : 0); } catch { }
+            }
+#endif
 #if ENABLE_INPUT_SYSTEM
             _activeSensor = null;
 #endif
@@ -661,8 +786,108 @@ namespace VRAtis.Hardware
         }
 #endif
 
+        private static void RequestHighRefreshDisplayModeOnAndroid()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                if (Screen.width > 0 && Screen.height > 0)
+                {
+                    Screen.SetResolution(
+                        Screen.width,
+                        Screen.height,
+                        FullScreenMode.FullScreenWindow,
+                        new RefreshRate { numerator = 120, denominator = 1 });
+                }
+            }
+            catch { }
+
+            try
+            {
+                using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+                {
+                    if (activity == null)
+                        return;
+
+                    activity.Call("runOnUiThread", new AndroidJavaRunnable(() =>
+                    {
+                        try
+                        {
+                            using (var window = activity.Call<AndroidJavaObject>("getWindow"))
+                            using (var wm = activity.Call<AndroidJavaObject>("getWindowManager"))
+                            using (var display = wm.Call<AndroidJavaObject>("getDefaultDisplay"))
+                            {
+                                AndroidJavaObject[] modes = display.Call<AndroidJavaObject[]>("getSupportedModes");
+                                if (modes == null || modes.Length == 0)
+                                    return;
+
+                                int bestModeId = -1;
+                                float bestFps = 0f;
+                                int maxPixels = 0;
+
+                                for (int i = 0; i < modes.Length; i++)
+                                {
+                                    using (AndroidJavaObject m = modes[i])
+                                    {
+                                        int mw = m.Call<int>("getPhysicalWidth");
+                                        int mh = m.Call<int>("getPhysicalHeight");
+                                        int pixels = mw * mh;
+                                        float fps = m.Call<float>("getRefreshRate");
+                                        int id = m.Call<int>("getModeId");
+
+                                        if (pixels > maxPixels || (pixels == maxPixels && fps > bestFps))
+                                        {
+                                            maxPixels = pixels;
+                                            bestFps = fps;
+                                            bestModeId = id;
+                                        }
+                                    }
+                                }
+
+                                if (bestModeId >= 0 && window != null)
+                                {
+                                    using (var lp = window.Call<AndroidJavaObject>("getAttributes"))
+                                    {
+                                        lp.Set("preferredDisplayModeId", bestModeId);
+                                        lp.Set("preferredRefreshRate", bestFps);
+                                        window.Call("setAttributes", lp);
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }));
+                }
+            }
+            catch { }
+#endif
+        }
+
         private void EnablePhoneSensor()
         {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                if (vratis_sensor_start(useCompassNorthLock ? 1 : 0) != 0)
+                {
+                    _usingNativeAndroidSensor = true;
+#if ENABLE_INPUT_SYSTEM
+                    // Disable duplicate Unity InputSystem sensors so GameActivity doesn't marshal 400+ unused events/sec
+                    if (_activeSensor != null && _activeSensor.enabled)
+                        InputSystem.DisableDevice(_activeSensor);
+                    if (_activeGyro != null && _activeGyro.enabled)
+                        InputSystem.DisableDevice(_activeGyro);
+#endif
+                    return;
+                }
+            }
+            catch
+            {
+                _usingNativeAndroidSensor = false;
+            }
+#endif
+
 #if ENABLE_INPUT_SYSTEM
             try
             {
@@ -709,8 +934,71 @@ namespace VRAtis.Hardware
 #endif
         }
 
+        private static Quaternion ConvertRawEnuQuaternionToUnityWorld(Quaternion enuQ, ScreenOrientation screenOri)
+        {
+            Quaternion screenRot = Quaternion.identity;
+            switch (screenOri)
+            {
+                case ScreenOrientation.LandscapeLeft:
+                    screenRot = ScreenRotLandscapeLeft;
+                    break;
+                case ScreenOrientation.LandscapeRight:
+                    screenRot = ScreenRotLandscapeRight;
+                    break;
+                case ScreenOrientation.PortraitUpsideDown:
+                    screenRot = ScreenRotPortraitUpsideDown;
+                    break;
+            }
+
+            Quaternion rq = enuQ * screenRot;
+            return AttitudeBaseRotation * new Quaternion(rq.x, rq.y, -rq.z, -rq.w);
+        }
+
+        private ScreenOrientation GetEffectiveScreenOrientation()
+        {
+            ScreenOrientation ori = Screen.orientation;
+            if (ori == ScreenOrientation.LandscapeLeft || ori == ScreenOrientation.LandscapeRight ||
+                ori == ScreenOrientation.Portrait || ori == ScreenOrientation.PortraitUpsideDown)
+            {
+                return ori;
+            }
+            return _activeLandscapeOrientation;
+        }
+
         private bool TryReadPhoneAttitude(out Quaternion worldHeadRot)
         {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_usingNativeAndroidSensor)
+            {
+                try
+                {
+                    if (vratis_sensor_get_pose(out Quaternion nativeEnuQ, out Vector3 nativeGyroRadSec, out _) != 0)
+                    {
+                        float nSq = nativeEnuQ.x * nativeEnuQ.x + nativeEnuQ.y * nativeEnuQ.y +
+                                    nativeEnuQ.z * nativeEnuQ.z + nativeEnuQ.w * nativeEnuQ.w;
+                        if (nSq > 1e-4f)
+                        {
+                            float inv = 1f / Mathf.Sqrt(nSq);
+                            Quaternion normEnu = new Quaternion(
+                                nativeEnuQ.x * inv,
+                                nativeEnuQ.y * inv,
+                                nativeEnuQ.z * inv,
+                                nativeEnuQ.w * inv);
+
+                            _latestNativeDeviceGyroRadSec = nativeGyroRadSec;
+                            _gyroHasValidReadings = true;
+                            worldHeadRot = ConvertRawEnuQuaternionToUnityWorld(normEnu, GetEffectiveScreenOrientation());
+                            return true;
+                        }
+                    }
+                }
+                catch
+                {
+                    _usingNativeAndroidSensor = false;
+                }
+            }
+#endif
+
 #if ENABLE_INPUT_SYSTEM
             AttitudeSensor sensor = _activeSensor ?? ResolvePreferredSensor();
             if (sensor != null)
@@ -722,6 +1010,24 @@ namespace VRAtis.Hardware
                         InputSystem.EnableDevice(sensor);
                     try { sensor.samplingFrequency = requestedSensorRateHz; } catch { }
                 }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+                // Bypass Unity's AndroidCompensateRotationProcessor which strips the sign of data[3] (cos(theta/2))
+                Quaternion unprocEnu = sensor.attitude.ReadUnprocessedValue();
+                float unprocNormSq = unprocEnu.x * unprocEnu.x + unprocEnu.y * unprocEnu.y +
+                                     unprocEnu.z * unprocEnu.z + unprocEnu.w * unprocEnu.w;
+                if (unprocNormSq > 0.25f)
+                {
+                    float invUnproc = 1f / Mathf.Sqrt(unprocNormSq);
+                    Quaternion normEnu = new Quaternion(
+                        unprocEnu.x * invUnproc,
+                        unprocEnu.y * invUnproc,
+                        unprocEnu.z * invUnproc,
+                        unprocEnu.w * invUnproc);
+                    worldHeadRot = ConvertRawEnuQuaternionToUnityWorld(normEnu, GetEffectiveScreenOrientation());
+                    return true;
+                }
+#endif
 
                 Quaternion rawQ = sensor.attitude.ReadValue();
                 float normSq = rawQ.x * rawQ.x + rawQ.y * rawQ.y + rawQ.z * rawQ.z + rawQ.w * rawQ.w;
@@ -743,6 +1049,29 @@ namespace VRAtis.Hardware
 
         private bool TryReadPhoneGyroWorld(Quaternion currentTargetRot, out Vector3 worldAngularVelDegPerSec)
         {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_usingNativeAndroidSensor && _gyroHasValidReadings)
+            {
+                Vector3 g = _latestNativeDeviceGyroRadSec;
+                if (g.sqrMagnitude < 1000f)
+                {
+                    // Map Portrait right-handed device gyro (wx, wy, wz) into screen-aligned Unity camera local angular velocity
+                    ScreenOrientation ori = GetEffectiveScreenOrientation();
+                    Vector3 camLocalRad;
+                    if (ori == ScreenOrientation.LandscapeRight)
+                        camLocalRad = new Vector3(g.y, g.x, g.z);
+                    else // LandscapeLeft default
+                        camLocalRad = new Vector3(-g.y, -g.x, g.z);
+
+                    if (_isRoll180Compensated)
+                        camLocalRad = new Vector3(-camLocalRad.x, -camLocalRad.y, camLocalRad.z);
+
+                    worldAngularVelDegPerSec = Vector3.ClampMagnitude((currentTargetRot * camLocalRad) * Mathf.Rad2Deg, 720f);
+                    return true;
+                }
+            }
+#endif
+
 #if ENABLE_INPUT_SYSTEM
             UnityEngine.InputSystem.Gyroscope gyro = _activeGyro ?? ResolveGyroscope();
             if (gyro != null)
@@ -762,8 +1091,9 @@ namespace VRAtis.Hardware
 
                 if (_gyroHasValidReadings && sqrMag < 1000f)
                 {
-                    float signXY = _isRoll180Compensated ? 1f : -1f;
-                    Vector3 localDegPerSec = new Vector3(signXY * rawRadPerSec.x, signXY * rawRadPerSec.y, rawRadPerSec.z) * Mathf.Rad2Deg;
+                    float signY = _isRoll180Compensated ? 1f : -1f;
+                    float signX = _isRoll180Compensated ? -1f : 1f;
+                    Vector3 localDegPerSec = new Vector3(signX * rawRadPerSec.x, signY * rawRadPerSec.y, rawRadPerSec.z) * Mathf.Rad2Deg;
                     worldAngularVelDegPerSec = Vector3.ClampMagnitude(currentTargetRot * localDegPerSec, 720f);
                     return true;
                 }

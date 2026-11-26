@@ -47,6 +47,9 @@ namespace VRAtis.EditorTools
             if (EditorApplication.isPlayingOrWillChangePlaymode || Application.isBatchMode)
                 return;
 
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "SampleScene")
+                return;
+
             if (GameObject.Find(CanvasName) != null && EditorPrefs.GetBool(AutoSetupVersionKey, false))
                 return;
 
@@ -636,7 +639,7 @@ namespace VRAtis.EditorTools
             valContainer.transform.SetParent(lensRow.transform, false);
             Text valTxt = valContainer.AddComponent<Text>();
             valTxt.font = font;
-            valTxt.text = "66 mm";
+            valTxt.text = "74 mm";
             valTxt.fontSize = 24;
             valTxt.fontStyle = FontStyle.Bold;
             valTxt.color = TextPrimaryColor;
@@ -647,7 +650,7 @@ namespace VRAtis.EditorTools
             valLe.minWidth = 110f;
 
             CreateCompactButton("LensPlusButton", lensRow.transform, roundedSprite, HeaderBgColor, font, "+1", 86f);
-            CreateCompactButton("LensResetButton", lensRow.transform, roundedSprite, new Color(0.14f, 0.30f, 0.26f, 0.96f), font, "66 mm", 116f);
+            CreateCompactButton("LensResetButton", lensRow.transform, roundedSprite, new Color(0.14f, 0.30f, 0.26f, 0.96f), font, "74 mm", 116f);
 
             Toggle vrSplit = CreateToggleRow("VrSplitCheckbox", cardGo.transform, roundedSprite, boxSprite, markSprite, font, "VR Çift Ekran Bölme (F2)", null, 52f);
             Image splitBg = vrSplit.GetComponent<Image>();

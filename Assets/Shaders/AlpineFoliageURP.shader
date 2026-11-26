@@ -52,8 +52,9 @@ Shader "VRAtis/AlpineFoliageURP"
                 float4 positionCS : SV_POSITION;
                 float2 uv : TEXCOORD0;
                 float3 positionWS : TEXCOORD1;
-                float3 normalWS : TEXCOORD2;
-                float fogFactor : TEXCOORD3;
+                half4 directAndFade : TEXCOORD2;
+                half3 ambientLight : TEXCOORD3;
+                float fogFactor : TEXCOORD4;
                 half4 vertColor : COLOR;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
@@ -88,18 +89,45 @@ Shader "VRAtis/AlpineFoliageURP"
 
             Varyings vert(Attributes input)
             {
-                Varyings output;
+                Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_TRANSFER_INSTANCE_ID(input, output);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
 
                 float3 posWS = TransformObjectToWorld(input.positionOS.xyz);
-                posWS = ApplyWindSway(posWS, input.uv);
+                float camDist = distance(posWS, _WorldSpaceCameraPos);
+                float safeFadeEnd = max(_FadeStart + 1.0, _FadeEnd);
+
+                // Collapse completely faded-out distant grass tufts in vertex stage -> 0 rasterized fragments on mobile TBDR
+                if (camDist >= safeFadeEnd)
+                {
+                    output.positionCS = float4(0.0, 0.0, 0.0, 0.0);
+                    return output;
+                }
+
+                if (camDist < 42.0)
+                    posWS = ApplyWindSway(posWS, input.uv);
+
+                float distFade = 1.0 - smoothstep(_FadeStart, safeFadeEnd, camDist);
+                float3 normalWS = normalize(TransformObjectToWorldNormal(input.normalOS));
+                Light mainLight = GetMainLight();
+
+                float ndotl = dot(normalWS, mainLight.direction);
+                half wrapDiff = (half)saturate(ndotl * 0.5 + 0.5);
+
+                half backLit = 0.0h;
+                if (_Translucency > 0.001 && camDist < 65.0)
+                {
+                    float3 viewDirWS = GetWorldSpaceNormalizeViewDir(posWS);
+                    float bl = saturate(dot(-viewDirWS, mainLight.direction));
+                    backLit = (half)(bl * bl * bl * _Translucency);
+                }
 
                 output.positionWS = posWS;
                 output.positionCS = TransformWorldToHClip(posWS);
-                output.normalWS = TransformObjectToWorldNormal(input.normalOS);
                 output.uv = TRANSFORM_TEX(input.uv, _BaseMap);
+                output.directAndFade = half4(mainLight.color * (wrapDiff + backLit), (half)distFade);
+                output.ambientLight = SampleSH(normalWS) * lerp(0.68h, 1.05h, (half)saturate(input.uv.y));
                 output.fogFactor = ComputeFogFactor(output.positionCS.z);
                 output.vertColor = input.color;
                 return output;
@@ -111,37 +139,23 @@ Shader "VRAtis/AlpineFoliageURP"
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
                 half4 tex = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv);
+                half alpha = tex.a * input.directAndFade.a;
+                clip(alpha - (half)_Cutoff);
 
-                // Smooth far-distance dissolve for grass while preserving pine/shrub visibility
-                float camDist = distance(input.positionWS, _WorldSpaceCameraPos);
-                float distFade = 1.0 - smoothstep(_FadeStart, max(_FadeStart + 1.0, _FadeEnd), camDist);
-                half alpha = tex.a * distFade;
-                clip(alpha - _Cutoff);
+                half shadowTerm = 1.0h;
+                #if defined(_MAIN_LIGHT_SHADOWS) || defined(_MAIN_LIGHT_SHADOWS_CASCADE) || defined(_MAIN_LIGHT_SHADOWS_SCREEN)
+                float3 dCam = input.positionWS - _WorldSpaceCameraPos;
+                if (dot(dCam, dCam) < 1764.0)
+                {
+                    Light shadowedLight = GetMainLight(TransformWorldToShadowCoord(input.positionWS));
+                    shadowTerm = (half)(shadowedLight.shadowAttenuation * shadowedLight.distanceAttenuation);
+                }
+                #endif
 
                 half3 albedo = tex.rgb * _BaseColor.rgb * input.vertColor.rgb;
-                float3 normalWS = normalize(input.normalWS);
-                float3 viewDirWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
-
-                // Receive directional sunlight + real mountain/tree shadows
-                float4 shadowCoord = TransformWorldToShadowCoord(input.positionWS);
-                Light mainLight = GetMainLight(shadowCoord);
-
-                float ndotl = dot(normalWS, mainLight.direction);
-                float wrapDiff = saturate(ndotl * 0.5 + 0.5);
-                float shadowTerm = mainLight.shadowAttenuation * mainLight.distanceAttenuation;
-
-                // Subsurface backlit glow when looking toward sunlit grass/pine
-                float backLit = (_Translucency > 0.001)
-                    ? pow(saturate(dot(-viewDirWS, mainLight.direction)), 3.0) * _Translucency
-                    : 0.0;
-                half3 directLight = mainLight.color * ((wrapDiff + backLit) * shadowTerm);
-
-                // Trilight ambient sky/equator/ground approximation
-                half3 ambient = SampleSH(normalWS) * lerp(0.68h, 1.05h, saturate(input.uv.y));
-
-                half3 litColor = albedo * (directLight + ambient);
+                half3 litColor = albedo * (input.directAndFade.rgb * shadowTerm + input.ambientLight);
                 litColor = MixFog(litColor, input.fogFactor);
-                return half4(litColor, 1.0);
+                return half4(litColor, 1.0h);
             }
             ENDHLSL
         }
@@ -174,6 +188,7 @@ Shader "VRAtis/AlpineFoliageURP"
             {
                 float4 positionCS : SV_POSITION;
                 float2 uv : TEXCOORD0;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -193,8 +208,9 @@ Shader "VRAtis/AlpineFoliageURP"
 
             Varyings vertShadow(Attributes input)
             {
-                Varyings output;
+                Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_TRANSFER_INSTANCE_ID(input, output);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
                 float3 posWS = TransformObjectToWorld(input.positionOS.xyz);
                 output.positionCS = TransformWorldToHClip(posWS);
@@ -204,9 +220,10 @@ Shader "VRAtis/AlpineFoliageURP"
 
             half4 fragShadow(Varyings input) : SV_Target
             {
+                UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
                 half alpha = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv).a;
-                clip(alpha - _Cutoff);
+                clip(alpha - (half)_Cutoff);
                 return 0;
             }
             ENDHLSL
@@ -239,6 +256,7 @@ Shader "VRAtis/AlpineFoliageURP"
             {
                 float4 positionCS : SV_POSITION;
                 float2 uv : TEXCOORD0;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -258,8 +276,9 @@ Shader "VRAtis/AlpineFoliageURP"
 
             Varyings vertDepth(Attributes input)
             {
-                Varyings output;
+                Varyings output = (Varyings)0;
                 UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_TRANSFER_INSTANCE_ID(input, output);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
                 float3 posWS = TransformObjectToWorld(input.positionOS.xyz);
                 output.positionCS = TransformWorldToHClip(posWS);
@@ -272,7 +291,7 @@ Shader "VRAtis/AlpineFoliageURP"
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
                 half alpha = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv).a;
-                clip(alpha - _Cutoff);
+                clip(alpha - (half)_Cutoff);
                 return 0;
             }
             ENDHLSL

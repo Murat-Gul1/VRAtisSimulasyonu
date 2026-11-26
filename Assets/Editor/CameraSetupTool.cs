@@ -9,7 +9,7 @@ namespace VRAtis.EditorTools
     [InitializeOnLoad]
     public static class CameraSetupTool
     {
-        private const string AutoSetupVersionKey = "VRAtis_Camera_V21_Done";
+        private const string AutoSetupVersionKey = "VRAtis_Camera_V22_Done";
 
         static CameraSetupTool()
         {
@@ -28,12 +28,16 @@ namespace VRAtis.EditorTools
             if (EditorApplication.isPlayingOrWillChangePlaymode || Application.isBatchMode)
                 return;
 
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "SampleScene")
+                return;
+
             Camera mainCam = Camera.main;
             if (mainCam == null)
                 return;
 
             if (mainCam.GetComponent<HeadTrackingCameraController>() != null &&
                 mainCam.GetComponent<CardboardStereoRig>() != null &&
+                mainCam.GetComponent<PlayerLocomotionController>() != null &&
                 Object.FindAnyObjectByType<WeaponAimController>() != null &&
                 Object.FindAnyObjectByType<OpticalRifleTracker>() != null &&
                 EditorPrefs.GetBool(AutoSetupVersionKey, false))
@@ -75,8 +79,12 @@ namespace VRAtis.EditorTools
             if (stereoRig == null)
                 stereoRig = Undo.AddComponent<CardboardStereoRig>(mainCam.gameObject);
 
+            PlayerLocomotionController locomotion = mainCam.GetComponent<PlayerLocomotionController>();
+            if (locomotion == null)
+                locomotion = Undo.AddComponent<PlayerLocomotionController>(mainCam.gameObject);
+
             SerializedObject stereoSo = new SerializedObject(stereoRig);
-            stereoSo.FindProperty("lensCenterSpacingMm").floatValue = 66f;
+            stereoSo.FindProperty("lensCenterSpacingMm").floatValue = 74f;
             stereoSo.FindProperty("fallbackPhoneWidthMm").floatValue = 154f;
             stereoSo.FindProperty("virtualEyeIpdMm").floatValue = 45f;
             stereoSo.FindProperty("vrVerticalFov").floatValue = 68f;
@@ -151,6 +159,15 @@ namespace VRAtis.EditorTools
                 aimSo.FindProperty("rifleReceiver").objectReferenceValue = receiver;
                 aimSo.FindProperty("eyeReliefMeters").floatValue = 0.215f;
                 aimSo.ApplyModifiedPropertiesWithoutUndo();
+
+                SerializedObject locoSo = new SerializedObject(locomotion);
+                locoSo.FindProperty("rifleReceiver").objectReferenceValue = receiver;
+                locoSo.FindProperty("rifleTransform").objectReferenceValue = rifleCtrl.transform;
+                locoSo.FindProperty("headTracker").objectReferenceValue = headTracker;
+                locoSo.FindProperty("opticalTracker").objectReferenceValue = opticalTracker;
+                locoSo.FindProperty("weaponAimController").objectReferenceValue = aimCtrl;
+                locoSo.FindProperty("settingsMenu").objectReferenceValue = Object.FindAnyObjectByType<VRAtis.UI.SettingsMenuController>();
+                locoSo.ApplyModifiedPropertiesWithoutUndo();
 
                 if (redDotSight != null)
                 {

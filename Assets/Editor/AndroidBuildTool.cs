@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using UnityEditor;
+using UnityEditor.Android;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
@@ -10,13 +11,84 @@ using Debug = UnityEngine.Debug;
 
 namespace VRAtis.EditorTools
 {
+    /// <summary>
+    /// Injects android.permission.HIGH_SAMPLING_RATE_SENSORS into the generated Gradle AndroidManifest.xml
+    /// so Android 12-15+ (API 31+) allows >200 Hz (400 Hz / 2500 us) native NDK IMU head-tracking without throttling.
+    /// </summary>
+    public class AndroidHighRateSensorManifestPatcher : IPostGenerateGradleAndroidProject
+    {
+        private const string HighSamplingPermission = "android.permission.HIGH_SAMPLING_RATE_SENSORS";
+
+        public int callbackOrder => 10;
+
+        public void OnPostGenerateGradleAndroidProject(string path)
+        {
+            string manifestPath = Path.Combine(path, "src", "main", "AndroidManifest.xml");
+            if (!File.Exists(manifestPath))
+                return;
+
+            string xml = File.ReadAllText(manifestPath);
+            if (xml.Contains(HighSamplingPermission))
+                return;
+
+            int appIdx = xml.IndexOf("<application", StringComparison.Ordinal);
+            if (appIdx > 0)
+            {
+                string permTag = $"  <uses-permission android:name=\"{HighSamplingPermission}\" />\n  ";
+                xml = xml.Insert(appIdx, permTag);
+                File.WriteAllText(manifestPath, xml);
+                Debug.Log("[AndroidBuildTool] AndroidManifest.xml içine HIGH_SAMPLING_RATE_SENSORS (400 Hz VR IMU) izni eklendi.");
+            }
+        }
+    }
+
+    [InitializeOnLoad]
     public static class AndroidBuildTool
     {
         public const string DefaultApkRelativePath = "Builds/VRAtisSimulasyonu.apk";
+        private const string NativeHeadSensorPluginAssetPath = "Assets/Plugins/Android/vratis_head_sensor.c";
+
+        static AndroidBuildTool()
+        {
+            EditorApplication.delayCall += EnsureNativeHeadSensorPluginConfigured;
+        }
+
+        private static void EnsureNativeHeadSensorPluginConfigured()
+        {
+            PluginImporter importer = AssetImporter.GetAtPath(NativeHeadSensorPluginAssetPath) as PluginImporter;
+            if (importer == null)
+                return;
+
+            bool changed = false;
+            if (importer.GetCompatibleWithAnyPlatform())
+            {
+                importer.SetCompatibleWithAnyPlatform(false);
+                changed = true;
+            }
+            if (importer.GetCompatibleWithEditor())
+            {
+                importer.SetCompatibleWithEditor(false);
+                changed = true;
+            }
+            if (!importer.GetCompatibleWithPlatform(BuildTarget.Android))
+            {
+                importer.SetCompatibleWithPlatform(BuildTarget.Android, true);
+                changed = true;
+            }
+            if (importer.GetPlatformData(BuildTarget.Android, "CPU") != "ARM64")
+            {
+                importer.SetPlatformData(BuildTarget.Android, "CPU", "ARM64");
+                changed = true;
+            }
+
+            if (changed)
+                importer.SaveAndReimport();
+        }
 
         [MenuItem("VRAtis/Android/1. Android Ayarlarını Uygula")]
         public static void ApplyAndroidSettings()
         {
+            EnsureNativeHeadSensorPluginConfigured();
             PlayerSettings.companyName = "VRAtis";
             PlayerSettings.productName = "VRAtisSimulasyonu";
             PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.Android, "com.vratis.simulasyon");
@@ -28,6 +100,7 @@ namespace VRAtis.EditorTools
 
             PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel26;
             PlayerSettings.Android.forceInternetPermission = true;
+            PlayerSettings.Android.optimizedFramePacing = true;
             PlayerSettings.SetScriptingBackend(NamedBuildTarget.Android, ScriptingImplementation.IL2CPP);
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
 
@@ -83,7 +156,8 @@ namespace VRAtis.EditorTools
             {
                 double mb = summary.totalSize / (1024.0 * 1024.0);
                 Debug.Log($"[AndroidBuildTool] APK başarıyla oluşturuldu: {apkFullPath} ({mb:F1} MB, {summary.totalTime.TotalSeconds:F1} sn)");
-                EditorUtility.RevealInFinder(apkFullPath);
+                if (!Application.isBatchMode)
+                    EditorUtility.RevealInFinder(apkFullPath);
                 return true;
             }
 

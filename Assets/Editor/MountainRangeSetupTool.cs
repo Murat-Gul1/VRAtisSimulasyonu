@@ -27,6 +27,9 @@ namespace VRAtis.EditorTools
             if (EditorApplication.isPlayingOrWillChangePlaymode || Application.isBatchMode)
                 return;
 
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "SampleScene")
+                return;
+
             if (GameObject.Find("Environment_Mountains") != null && EditorPrefs.GetBool(AutoSetupVersionKey, false))
                 return;
 

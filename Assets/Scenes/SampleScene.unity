@@ -4743,7 +4743,7 @@ MonoBehaviour:
     m_HorizontalOverflow: 0
     m_VerticalOverflow: 0
     m_LineSpacing: 1
-  m_Text: 66 mm
+  m_Text: 74 mm
 --- !u!222 &155496850
 CanvasRenderer:
   m_ObjectHideFlags: 0
@@ -8984,6 +8984,7 @@ GameObject:
   - component: {fileID: 330585547}
   - component: {fileID: 330585548}
   - component: {fileID: 330585549}
+  - component: {fileID: 330585550}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -9089,10 +9090,10 @@ MonoBehaviour:
   m_VolumeTrigger: {fileID: 0}
   m_VolumeFrameworkUpdateModeOption: 2
   m_RenderPostProcessing: 1
-  m_Antialiasing: 0
-  m_AntialiasingQuality: 2
+  m_Antialiasing: 2
+  m_AntialiasingQuality: 1
   m_StopNaN: 0
-  m_Dithering: 0
+  m_Dithering: 1
   m_ClearDepth: 1
   m_AllowXRRendering: 1
   m_AllowHDROutput: 1
@@ -9123,6 +9124,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Hardware.HeadTrackingCameraController
   rifleOrientationController: {fileID: 1252551449}
   opticalTracker: {fileID: 1252551452}
+  rifleReceiver: {fileID: 0}
   lockLandscapeOnMobile: 1
   useCompassNorthLock: 0
   preferGameRotationVector: 1
@@ -9150,7 +9152,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Hardware.CardboardStereoRig
   enableSplitScreen: 1
   allowVKeyToggle: 1
-  lensCenterSpacingMm: 66
+  lensCenterSpacingMm: 74
   autoDetectPhysicalPhoneWidth: 1
   fallbackPhoneWidthMm: 154
   allowLiveCalibrationButtons: 0
@@ -9158,6 +9160,54 @@ MonoBehaviour:
   vrVerticalFov: 68
   singleScreenFov: 64
   drawBlackMaskBorders: 1
+--- !u!114 &330585550
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 330585543}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 62589522d3d733449bdaa1594b107e70, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::VRAtis.Hardware.PlayerLocomotionController
+  rifleReceiver: {fileID: 841191213}
+  rifleTransform: {fileID: 1252551450}
+  headTracker: {fileID: 330585548}
+  opticalTracker: {fileID: 1252551452}
+  weaponAimController: {fileID: 1252551451}
+  settingsMenu: {fileID: 1896852956}
+  referenceMode: 0
+  pauseWhileSettingsMenuOpen: 1
+  walkSpeedMetersPerSec: 2.6
+  adsWalkSpeedMetersPerSec: 1.45
+  sprintSpeedMetersPerSec: 4.6
+  allowSprintWhileAiming: 0
+  backwardSpeedMultiplier: 0.72
+  strafeSpeedMultiplier: 0.85
+  acceleration: 14
+  deceleration: 18
+  analogResponseExponent: 1.35
+  invertStrafeX: 0
+  invertForwardY: 0
+  swapAxes: 0
+  extraSoftwareDeadzone: 0
+  enableKeyboardTest: 1
+  enableObstacleCollision: 1
+  obstacleLayers:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  playerBodyRadiusMeters: 0.32
+  clampToValleyBounds: 1
+  minWorldX: -340
+  maxWorldX: 340
+  minWorldZ: -70
+  maxWorldZ: 530
+  activeMoveInput: {x: 0, y: 0}
+  currentSpeedMetersPerSec: 0
+  isSprinting: 0
+  activeForwardBasis: {x: 0, y: 0, z: 1}
 --- !u!1001 &331199560
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -22665,6 +22715,12 @@ MonoBehaviour:
   burstDrainedPerSec: 0
   totalShotCount: 0
   isTriggerPressed: 0
+  isMagContactPressed: 0
+  totalMagToggleCount: 0
+  isRecenterButtonPressed: 0
+  totalRecenterCount: 0
+  joystickAxis: {x: 0, y: 0}
+  isJoystickButtonPressed: 0
   rawImuQuaternion: {x: 0, y: 0, z: 0, w: 1}
 --- !u!4 &841191214
 Transform:
@@ -32485,7 +32541,7 @@ MonoBehaviour:
     m_HorizontalOverflow: 0
     m_VerticalOverflow: 0
     m_LineSpacing: 1
-  m_Text: 66 mm
+  m_Text: 74 mm
 --- !u!222 &1197350255
 CanvasRenderer:
   m_ObjectHideFlags: 0

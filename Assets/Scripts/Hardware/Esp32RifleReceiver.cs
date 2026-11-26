@@ -12,15 +12,15 @@ using Debug = UnityEngine.Debug;
 namespace VRAtis.Hardware
 {
     /// <summary>
-    /// Zero-allocation, high-priority UDP receiver for the 26-byte ESP32 quaternion + trigger + shoulder + magazine packet
-    /// (backward-compatible with 22-byte and 23-byte legacy packets).
+    /// Zero-allocation, high-priority UDP receiver for the 34-byte ESP32 quaternion + trigger + shoulder + magazine + recenter + joystick packet
+    /// (backward-compatible with 22-byte, 23-byte, 26-byte, and 29-byte legacy packets).
     /// Includes burst draining and real-time Wi-Fi vs. Unity frame stutter diagnostics.
     /// </summary>
     public class Esp32RifleReceiver : MonoBehaviour
     {
         public const byte PacketHeader = 0xAA;
         public const int PacketSizeBytes = 22;
-        public const int MaxPacketSizeBytes = 26;
+        public const int MaxPacketSizeBytes = 34;
         private const int SioUdpConnReset = -1744830452;
 
         [Header("Ağ ve Performans Ayarları")]
@@ -50,6 +50,10 @@ namespace VRAtis.Hardware
         [SerializeField] private bool isTriggerPressed;
         [SerializeField] private bool isMagContactPressed;
         [SerializeField] private uint totalMagToggleCount;
+        [SerializeField] private bool isRecenterButtonPressed;
+        [SerializeField] private uint totalRecenterCount;
+        [SerializeField] private Vector2 joystickAxis;
+        [SerializeField] private bool isJoystickButtonPressed;
         [SerializeField] private Quaternion rawImuQuaternion = Quaternion.identity;
 
         /// <summary>
@@ -62,12 +66,23 @@ namespace VRAtis.Hardware
         /// </summary>
         public event Action<uint> OnMagazineTogglePressed;
 
+        /// <summary>
+        /// Fired on the Unity main thread for each newly confirmed GPIO 18 physical recenter button press
+        /// (equivalent to 2-finger screen tap: recenters VR head + rifle + guided 2-LED optical zeroing).
+        /// </summary>
+        public event Action<uint> OnRecenterButtonPressed;
+
         public Quaternion RawImuQuaternion { get; private set; } = Quaternion.identity;
         public bool IsTriggerPressed { get; private set; }
         public bool IsShoulderPressed { get; private set; }
         public bool IsMagContactPressed { get; private set; }
+        public bool IsRecenterButtonPressed { get; private set; }
+        public bool HasJoystickData { get; private set; }
+        public Vector2 JoystickAxis { get; private set; }
+        public bool IsJoystickButtonPressed { get; private set; }
         public uint TotalShotCount { get; private set; }
         public uint TotalMagToggleCount { get; private set; }
+        public uint TotalRecenterCount { get; private set; }
         public uint PacketSequence { get; private set; }
         public bool IsConnected { get; private set; }
         public float PacketRateHz { get; private set; }
@@ -97,6 +112,13 @@ namespace VRAtis.Hardware
         private bool _sharedHasMagData;
         private bool _sharedMagContactPressed;
         private ushort _sharedMagToggleCount;
+        private bool _sharedHasRecenterData;
+        private bool _sharedRecenterPressed;
+        private ushort _sharedRecenterCount;
+        private bool _sharedHasJoyData;
+        private float _sharedJoyX;
+        private float _sharedJoyY;
+        private bool _sharedJoySwPressed;
         private uint _sharedShotCount;
         private uint _sharedPacketSeq;
         private bool _hasReceivedAnyPacket;
@@ -110,6 +132,8 @@ namespace VRAtis.Hardware
         private uint _lastProcessedShotCount;
         private bool _magBaselineInitialized;
         private ushort _lastProcessedMagToggleCount;
+        private bool _recenterBaselineInitialized;
+        private ushort _lastProcessedRecenterCount;
         private bool _loggedFirstPacket;
         private float _statsTimer;
         private float _maxFrameTimeMsWindow;
@@ -122,7 +146,9 @@ namespace VRAtis.Hardware
             Application.runInBackground = true;
             if (targetFrameRate > 0)
             {
-                QualitySettings.vSyncCount = 0;
+                // On mobile VR, lock 1:1 to hardware VSync (Swappy) to eliminate 120fps-into-60Hz frame-drop judder;
+                // on PC Editor/Standalone keep uncapped targetFrameRate.
+                QualitySettings.vSyncCount = Application.isMobilePlatform ? 1 : 0;
                 Application.targetFrameRate = targetFrameRate;
             }
         }
@@ -229,10 +255,8 @@ namespace VRAtis.Hardware
                     }
 
                     int latestPacketLen = Mathf.Min(bytesRead, MaxPacketSizeBytes);
-                    _latestValidPacket[22] = 0;
-                    _latestValidPacket[23] = 0;
-                    _latestValidPacket[24] = 0;
-                    _latestValidPacket[25] = 0;
+                    for (int k = 22; k < MaxPacketSizeBytes; k++)
+                        _latestValidPacket[k] = 0;
                     Buffer.BlockCopy(_recvBuffer, 0, _latestValidPacket, 0, latestPacketLen);
                     int burstCount = 1;
                     int drainedExtra = 0;
@@ -244,10 +268,8 @@ namespace VRAtis.Hardware
                         if (extraRead >= PacketSizeBytes && _recvBuffer[0] == PacketHeader)
                         {
                             latestPacketLen = Mathf.Min(extraRead, MaxPacketSizeBytes);
-                            _latestValidPacket[22] = 0;
-                            _latestValidPacket[23] = 0;
-                            _latestValidPacket[24] = 0;
-                            _latestValidPacket[25] = 0;
+                            for (int k = 22; k < MaxPacketSizeBytes; k++)
+                                _latestValidPacket[k] = 0;
                             Buffer.BlockCopy(_recvBuffer, 0, _latestValidPacket, 0, latestPacketLen);
                             burstCount++;
                             drainedExtra++;
@@ -264,6 +286,13 @@ namespace VRAtis.Hardware
                     bool hasMagField = latestPacketLen >= 26;
                     bool magContact = hasMagField && _latestValidPacket[23] != 0;
                     ushort magToggles = hasMagField ? BitConverter.ToUInt16(_latestValidPacket, 24) : (ushort)0;
+                    bool hasRecenterField = latestPacketLen >= 29;
+                    bool recenterPressed = hasRecenterField && _latestValidPacket[26] != 0;
+                    ushort recenterCount = hasRecenterField ? BitConverter.ToUInt16(_latestValidPacket, 27) : (ushort)0;
+                    bool hasJoyField = latestPacketLen >= 34;
+                    short rawJoyX = hasJoyField ? BitConverter.ToInt16(_latestValidPacket, 29) : (short)0;
+                    short rawJoyY = hasJoyField ? BitConverter.ToInt16(_latestValidPacket, 31) : (short)0;
+                    bool joySwPressed = hasJoyField && _latestValidPacket[33] != 0;
 
                     if (!IsFinite(qw) || !IsFinite(qx) || !IsFinite(qy) || !IsFinite(qz))
                         continue;
@@ -293,6 +322,19 @@ namespace VRAtis.Hardware
                             _sharedHasMagData = true;
                             _sharedMagContactPressed = magContact;
                             _sharedMagToggleCount = magToggles;
+                        }
+                        if (hasRecenterField)
+                        {
+                            _sharedHasRecenterData = true;
+                            _sharedRecenterPressed = recenterPressed;
+                            _sharedRecenterCount = recenterCount;
+                        }
+                        if (hasJoyField)
+                        {
+                            _sharedHasJoyData = true;
+                            _sharedJoyX = Mathf.Clamp(rawJoyX * 0.001f, -1f, 1f);
+                            _sharedJoyY = Mathf.Clamp(rawJoyY * 0.001f, -1f, 1f);
+                            _sharedJoySwPressed = joySwPressed;
                         }
                         _sharedShotCount = shots;
                         _sharedPacketSeq++;
@@ -351,6 +393,13 @@ namespace VRAtis.Hardware
             bool latestHasMagData;
             bool latestMagContact;
             ushort latestMagToggles;
+            bool latestHasRecenterData;
+            bool latestRecenterPressed;
+            ushort latestRecenterCount;
+            bool latestHasJoyData;
+            float latestJoyX;
+            float latestJoyY;
+            bool latestJoySwPressed;
             uint latestShots;
             uint latestSeq;
             bool hasPacket;
@@ -364,6 +413,13 @@ namespace VRAtis.Hardware
                 latestHasMagData = _sharedHasMagData;
                 latestMagContact = _sharedMagContactPressed;
                 latestMagToggles = _sharedMagToggleCount;
+                latestHasRecenterData = _sharedHasRecenterData;
+                latestRecenterPressed = _sharedRecenterPressed;
+                latestRecenterCount = _sharedRecenterCount;
+                latestHasJoyData = _sharedHasJoyData;
+                latestJoyX = _sharedJoyX;
+                latestJoyY = _sharedJoyY;
+                latestJoySwPressed = _sharedJoySwPressed;
                 latestShots = _sharedShotCount;
                 latestSeq = _sharedPacketSeq;
                 hasPacket = _hasReceivedAnyPacket;
@@ -439,11 +495,47 @@ namespace VRAtis.Hardware
                         _lastProcessedMagToggleCount = latestMagToggles;
                     }
                 }
+
+                if (latestHasRecenterData)
+                {
+                    IsRecenterButtonPressed = latestRecenterPressed;
+                    TotalRecenterCount = latestRecenterCount;
+
+                    if (!_recenterBaselineInitialized)
+                    {
+                        _lastProcessedRecenterCount = latestRecenterCount;
+                        _recenterBaselineInitialized = true;
+                    }
+                    else if (latestRecenterCount != _lastProcessedRecenterCount)
+                    {
+                        ushort forwardDelta = (ushort)(latestRecenterCount - _lastProcessedRecenterCount);
+                        if (forwardDelta > 0 && forwardDelta <= 8)
+                        {
+                            ushort seqVal = (ushort)(_lastProcessedRecenterCount + forwardDelta);
+                            OnRecenterButtonPressed?.Invoke(seqVal);
+                        }
+                        _lastProcessedRecenterCount = latestRecenterCount;
+                    }
+                }
+
+                if (latestHasJoyData && IsConnected)
+                {
+                    HasJoystickData = true;
+                    JoystickAxis = new Vector2(latestJoyX, latestJoyY);
+                    IsJoystickButtonPressed = latestJoySwPressed;
+                }
+                else
+                {
+                    JoystickAxis = Vector2.zero;
+                    IsJoystickButtonPressed = false;
+                }
             }
             else
             {
                 IsConnected = false;
                 PacketAgeSeconds = 999f;
+                JoystickAxis = Vector2.zero;
+                IsJoystickButtonPressed = false;
             }
 
             _statsTimer += Time.unscaledDeltaTime;
@@ -493,6 +585,10 @@ namespace VRAtis.Hardware
             isTriggerPressed = IsTriggerPressed;
             isMagContactPressed = IsMagContactPressed;
             totalMagToggleCount = TotalMagToggleCount;
+            isRecenterButtonPressed = IsRecenterButtonPressed;
+            totalRecenterCount = TotalRecenterCount;
+            joystickAxis = JoystickAxis;
+            isJoystickButtonPressed = IsJoystickButtonPressed;
             rawImuQuaternion = RawImuQuaternion;
         }
 
@@ -538,11 +634,11 @@ namespace VRAtis.Hardware
             string text =
                 $"[ESP32 Telemetri - Gizlemek için F1]\n" +
                 $"Durum: {status} | Paket Hızı: {PacketRateHz:F0} Hz | Atış: {TotalShotCount} | Şarjör: {TotalMagToggleCount}\n" +
+                $"Joystick: X={JoystickAxis.x:+0.00;-0.00;0.00} Y={JoystickAxis.y:+0.00;-0.00;0.00} SW={(IsJoystickButtonPressed ? 1 : 0)}\n" +
                 $"Maks Wi-Fi Paket Boşluğu: {MaxWifiPacketGapMs:F1} ms (Normal: ~5-12 ms)\n" +
-                $"Maks Unity Kare Süresi: {MaxUnityFrameTimeMs:F1} ms ({liveFps:F0} FPS)\n" +
-                $"Eritilen Paket Şişmesi: {BurstDrainedPerSec}/sn";
+                $"Maks Unity Kare Süresi: {MaxUnityFrameTimeMs:F1} ms ({liveFps:F0} FPS) | Eritilen: {BurstDrainedPerSec}/sn";
 
-            GUI.Box(new Rect(12f, 12f, 430f, 102f), text, _hudStyle);
+            GUI.Box(new Rect(12f, 12f, 445f, 114f), text, _hudStyle);
         }
 
         private static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);

@@ -10,7 +10,7 @@
 // ============================================================================
 // VR ATIŞ SİMÜLASYONU — NİHAİ SAF 6-DOF DUAL-CORE ESP32-S3 FIRMWARE
 // Core 1: 1000 Hz Bortz-Koning Exact Quaternion AHRS + 2 Kademeli Akıllı ZUPT + 1000 Hz Tetik Örnekleme
-// Core 0: 250 Hz Düşük Gecikmeli Unicast UDP + Parazit Filtreli Omuz/Şarjör
+// Core 0: 250 Hz Düşük Gecikmeli Unicast UDP + Parazit Filtreli Omuz/Şarjör/Sıfırlama + HW-504 Joystick (ADC1)
 // ============================================================================
 
 // --- AĞ AYARLARI (Yerel wifi_secrets.h varsa otomatik onu kullanır; yoksa şablon değerler derlenir) ---
@@ -34,7 +34,23 @@ IPAddress targetIp           = HOME_PC_IP;
 #define TRIGGER_PIN  15     // Tetik Sinyali -> GPIO 15, Diğer uç -> GND
 #define SHOULDER_PIN 16     // Omuz Temas Sensörü -> GPIO 16, Diğer plaka -> GND
 #define MAG_PIN      17     // Şarjör Çıkar/Tak Kontağı -> GPIO 17, Diğer uç -> GND (Her temas = oyuna 'V')
+#define RECENTER_PIN 18     // VR & LED Sıfırlama Butonu -> GPIO 18, Diğer uç -> GND (Ekrana 2 parmak dokunma ile aynı)
+#define JOY_VRX_PIN  4      // HW-504 Joystick VRx -> GPIO 4 (ADC1_CH3, Wi-Fi ile çakışmaz | Sağ/Sol)
+#define JOY_VRY_PIN  5      // HW-504 Joystick VRy -> GPIO 5 (ADC1_CH4, Wi-Fi ile çakışmaz | İleri/Geri)
+#define JOY_SW_PIN   6      // HW-504 Joystick SW  -> GPIO 6 (INPUT_PULLUP, orta basma butonu / Sprint)
 #define I2C_CLOCK_HZ 400000 // 400 kHz Fast-Mode I2C
+
+// --- JOYSTICK (HW-504) AYARLARI (Sol Ray Yan Montaj, Pinler Namlu Yönüne / İleriye Bakar, Besleme 3.3V) ---
+const uint32_t JOY_SAMPLE_INTERVAL_US = 4000;   // 250 Hz (4 ms) UDP hızıyla senkron ADC1 okuma (Core 0)
+const uint32_t JOY_SW_DEBOUNCE_US     = 30000;  // Joystick orta buton (SW) sıçrama koruması (30 ms)
+const float    JOY_DEADZONE           = 0.14f;  // %14 dairesel ölü bölge (HW-504 merkez boşluğu / drift engeli)
+const float    JOY_SMOOTH_ALPHA       = 0.28f;  // ADC parazit yumuşatma filtresi (hızlı tepki, sıfır titreme)
+const float    JOY_EDGE_MARGIN_RAW    = 140.0f; // 0..4095 uç payı (ESP32-S3 ADC tam uçta güvenle +-1000 verir)
+// Donanım testi doğrulandı: VRx=Namlu(0)/Geri(4095), VRy=Tavan/Yukarı(0)/Yer/Aşağı(4095)
+// Çıkış: Y(+1000=İleri/Namlu, -1000=Geri), X(+1000=Sağa/Yukarı, -1000=Sola/Aşağı)
+const bool     JOY_SWAP_XY            = true;   // VRx -> İleri/Geri (Y), VRy -> Yan Adım (X)
+const bool     JOY_INVERT_X           = true;   // Yukarı(tavan)=+1000 (Sağ), Aşağı(yer)=-1000 (Sol); tersi için false
+const bool     JOY_INVERT_Y           = true;   // Namluya doğru=+1000 (İleri), Kendime doğru=-1000 (Geri)
 
 // --- ZAMANLAMA SABİTLERİ (Core 1: 1000 Hz IMU / Core 0: 250 Hz UDP) ---
 const uint32_t IMU_INTERVAL_US        = 1000;  // 1000 Hz (1 ms) deterministik Core 1 döngüsü
@@ -47,6 +63,9 @@ const uint32_t SHOULDER_DEBOUNCE_US   = 30000; // Omuz sensörü sıçrama korum
 const uint32_t MAG_CONFIRM_US         = 20000; // Şarjör temas onay süresi (20 ms kesintisiz LOW -> parazit/ESD reddi)
 const uint32_t MAG_RELEASE_DEBOUNCE_US= 80000; // Kablolar ayrıldıktan sonra yeniden kurulma (80 ms kesintisiz HIGH)
 const uint32_t MIN_MAG_TOGGLE_GAP_US  = 300000;// İki şarjör olayı arası min 300 ms (tek temasta çift tetik koruması)
+const uint32_t RECENTER_CONFIRM_US    = 25000; // Sıfırlama butonu onay süresi (25 ms kesintisiz LOW -> parazit/ESD reddi)
+const uint32_t RECENTER_RELEASE_US    = 80000; // Sıfırlama butonu bırakma onayı (80 ms kesintisiz HIGH)
+const uint32_t MIN_RECENTER_GAP_US    = 500000;// İki sıfırlama basışı arası min 500 ms
 const uint32_t DEBUG_INTERVAL_MS      = 1000;  // 1 Hz durum çıktısı
 const uint32_t UNICAST_KEEPALIVE_MS   = 6000;  // Unity "VRAT" yanıtı aktifken broadcast susar (Wi-Fi takılmasını önler)
 
@@ -95,7 +114,7 @@ enum CalRequest : uint8_t {
   CAL_CLEAR_ALL
 };
 
-// Unity'ye giden 26 byte'lık UDP paketi (Unity Esp32RifleReceiver ile %100 uyumlu)
+// Unity'ye giden 34 byte'lık UDP paketi (Unity Esp32RifleReceiver ile %100 uyumlu)
 struct __attribute__((packed)) RifleQuaternionPacket {
   uint8_t header;           // 0xAA doğrulama baytı
   float qw, qx, qy, qz;     // 3D Dönüş Verisi
@@ -104,7 +123,13 @@ struct __attribute__((packed)) RifleQuaternionPacket {
   uint8_t shoulderState;    // 1 = Omuzlandı (Red Dot Açık), 0 = Serbest (Red Dot Kapalı)
   uint8_t magState;         // 1 = Şarjör Kontağı Temaslı (GPIO 17 LOW), 0 = Serbest
   uint16_t magToggleCount;  // Onaylı şarjör temas sayacı (1. temas = çıkar, 2. temas = tak / Unity 'V')
+  uint8_t recenterState;    // 1 = Sıfırlama Butonu Basılı (GPIO 18 LOW), 0 = Serbest
+  uint16_t recenterCount;   // Onaylı sıfırlama butonu sayacı (Her basış = VR 2-parmak dokunuşu / LED + Yön sıfırlama)
+  int16_t joyX;             // Joystick Yatay/Yan Adım (-1000 = Sol .. +1000 = Sağ)
+  int16_t joyY;             // Joystick İleri/Geri (-1000 = Geri .. +1000 = İleri / Namlu Yönü)
+  uint8_t joySwState;       // 1 = Joystick Orta Buton Basılı (GPIO 6 LOW / Sprint), 0 = Serbest
 };
+static_assert(sizeof(RifleQuaternionPacket) == 34, "RifleQuaternionPacket 34 byte olmalidir");
 
 // Core 1 (IMU + 1kHz Tetik) -> Core 0 (Ağ/Serial) kilitli paylaşımlı anlık durum
 struct SharedImuSnapshot {
@@ -148,6 +173,7 @@ uint8_t mpuAddr               = 0x68;
 volatile bool cancelCalFlag   = false;
 volatile uint8_t pendingCal   = CAL_NONE;
 bool hasFlashGyroCal          = false;
+bool hasFlashLevelCal         = false;
 bool sensorInitialized        = false;
 
 // Tetik (Core 1 1000 Hz Wi-Fi'dan izole akıllı integrator) & Omuz Kararlı Filtre Değişkenleri
@@ -178,6 +204,33 @@ bool magHighTracking            = false;
 uint32_t magHighStartUs         = 0;
 uint32_t magGlitchRejected      = 0;
 
+// VR & LED Sıfırlama Butonu Filtre Değişkenleri (GPIO 18 <-> GND: Her onaylı basış = Ekrana 2 parmak dokunma ile aynı sıfırlama)
+bool recenterEventFlag          = false;
+bool recenterArmed              = true;
+uint16_t recenterCounter        = 0;
+uint32_t lastRecenterPressUs    = 0;
+bool recenterLowTracking        = false;
+uint32_t recenterLowStartUs     = 0;
+uint16_t recenterLowSamples     = 0;
+bool recenterHighTracking       = false;
+uint32_t recenterHighStartUs    = 0;
+
+// HW-504 Analog Joystick Durum Değişkenleri (Yalnız Core 0 netTask erişir; Core 1 IMU tamamen izoledir)
+float joyCenterX                = 2048.0f;
+float joyCenterY                = 2048.0f;
+float joyFiltRawX               = 2048.0f;
+float joyFiltRawY               = 2048.0f;
+int joyLastRawX                 = 2048;
+int joyLastRawY                 = 2048;
+int16_t joyOutX                 = 0;
+int16_t joyOutY                 = 0;
+uint8_t joySwState              = 0;
+bool joySwEventFlag             = false;
+bool joySwPendingTracking       = false;
+uint8_t joySwPendingVal         = 0;
+uint32_t joySwPendingStartUs    = 0;
+volatile bool pendingJoyRecenter = false;
+
 // Unity Unicast kilit durumu (kilitliyken broadcast kapatılır -> Wi-Fi takılması sıfır)
 bool unityClientLocked          = false;
 uint32_t lastUnityHeartbeatMs   = 0;
@@ -196,6 +249,12 @@ float smoothTempC = 25.0f;
 bool hasThermalSample = false;
 
 float gyroScaleX = 1.0f, gyroScaleY = 1.0f, gyroScaleZ = 1.0f;       // 360° kalibre edilebilir ölçek çarpanı
+
+// Kalıcı Masa Düzlük (Roll/Pitch Montaj Eğimi) Referansı ve 3D Ortogonal Düzeltme Matrisi
+float levelRefAx = 0.0f, levelRefAy = 0.0f, levelRefAz = 1.0f;
+float levelR00 = 1.0f, levelR01 = 0.0f, levelR02 = 0.0f;
+float levelR10 = 0.0f, levelR11 = 1.0f, levelR12 = 0.0f;
+float levelR20 = 0.0f, levelR21 = 0.0f, levelR22 = 1.0f;
 
 float zuptAnchorGx = 0.0f, zuptAnchorGy = 0.0f, zuptAnchorGz = 0.0f;
 float lpGxDegS = 0.0f, lpGyDegS = 0.0f, lpGzDegS = 0.0f;
@@ -269,6 +328,60 @@ bool readRawMPU() {
   return true;
 }
 
+// Masa üzerinde ölçülen yerçekimi vektörünü (ax, ay, az) saf dikey (0, 0, +1g) eksenine
+// sıfır Yaw burulmasıyla (qz=0) hizalayan 3D ortogonal montaj düzeltme matrisini kurar.
+bool updateLevelMountMatrix(float ax, float ay, float az) {
+  float norm = sqrtf(ax * ax + ay * ay + az * az);
+  if (norm < 0.70f || norm > 1.30f) return false;
+  float ux = ax / norm;
+  float uy = ay / norm;
+  float uz = az / norm;
+  if (uz < 0.50f) return false; // Tüfek 60 dereceden fazla yatık/ters ise masa düzlüğü olarak kaydetme
+
+  float w = 1.0f + uz;
+  float x = uy;
+  float y = -ux;
+  float qNorm = sqrtf(w * w + x * x + y * y);
+  if (qNorm < 1e-6f) return false;
+
+  float qw = w / qNorm;
+  float qx = x / qNorm;
+  float qy = y / qNorm;
+
+  levelR00 = 1.0f - 2.0f * qy * qy;
+  levelR01 = 2.0f * qx * qy;
+  levelR02 = 2.0f * qw * qy;
+  levelR10 = 2.0f * qx * qy;
+  levelR11 = 1.0f - 2.0f * qx * qx;
+  levelR12 = -2.0f * qw * qx;
+  levelR20 = -2.0f * qw * qy;
+  levelR21 = 2.0f * qw * qx;
+  levelR22 = 1.0f - 2.0f * (qx * qx + qy * qy);
+
+  levelRefAx = ux;
+  levelRefAy = uy;
+  levelRefAz = uz;
+  return true;
+}
+
+static inline void resetLevelMountMatrix() {
+  hasFlashLevelCal = false;
+  levelRefAx = 0.0f; levelRefAy = 0.0f; levelRefAz = 1.0f;
+  levelR00 = 1.0f; levelR01 = 0.0f; levelR02 = 0.0f;
+  levelR10 = 0.0f; levelR11 = 1.0f; levelR12 = 0.0f;
+  levelR20 = 0.0f; levelR21 = 0.0f; levelR22 = 1.0f;
+}
+
+static inline void applyLevelMountRotation(float& x, float& y, float& z) {
+  if (!hasFlashLevelCal) return;
+  float nx = levelR00 * x + levelR01 * y + levelR02 * z;
+  float ny = levelR10 * x + levelR11 * y + levelR12 * z;
+  float nz = levelR20 * x + levelR21 * y + levelR22 * z;
+  x = nx;
+  y = ny;
+  z = nz;
+}
+
 void initQuatFromAccel(float ax, float ay, float az) {
   float norm = sqrtf(ax * ax + ay * ay + az * az);
   if (norm < 1e-6f) return;
@@ -306,6 +419,10 @@ void saveGyroCalToFlash() {
   prefs.putFloat("sx", gyroScaleX);
   prefs.putFloat("sy", gyroScaleY);
   prefs.putFloat("sz", gyroScaleZ);
+  prefs.putBool("lvl_ok", hasFlashLevelCal);
+  prefs.putFloat("lax", levelRefAx);
+  prefs.putFloat("lay", levelRefAy);
+  prefs.putFloat("laz", levelRefAz);
   prefs.end();
 }
 
@@ -327,6 +444,16 @@ void loadGyroCalFromFlash() {
   gyroScaleX = (sx >= 0.85f && sx <= 1.15f) ? sx : 1.0f;
   gyroScaleY = (sy >= 0.85f && sy <= 1.15f) ? sy : 1.0f;
   gyroScaleZ = (sz >= 0.85f && sz <= 1.15f) ? sz : 1.0f;
+
+  bool lvlOk = prefs.getBool("lvl_ok", false);
+  if (lvlOk) {
+    float lax = prefs.getFloat("lax", 0.0f);
+    float lay = prefs.getFloat("lay", 0.0f);
+    float laz = prefs.getFloat("laz", 1.0f);
+    hasFlashLevelCal = updateLevelMountMatrix(lax, lay, laz);
+  } else {
+    resetLevelMountMatrix();
+  }
   prefs.end();
 }
 
@@ -340,14 +467,16 @@ void clearAllCalFlash() {
     prefs.end();
   }
   hasFlashGyroCal = false;
+  resetLevelMountMatrix();
   thermalKx = thermalKy = thermalKz = 0.0f;
   gyroScaleX = gyroScaleY = gyroScaleZ = 1.0f;
-  Serial.println("[BILGI] Tum Flash kayitlari (Jiroskop + Olcek) temizlendi.");
+  Serial.println("[BILGI] Tum Flash kayitlari (Jiroskop + Masa Duzlugu + Olcek) temizlendi.");
 }
 
-// Hareketsizlik Kontrollü Jiroskop & Poz Kalibrasyonu:
-// Tüfek açılışta elde hareketliyse bozuk bias almaz; Flash'taki temiz masa kalibrasyonunu kullanır!
-void calibrateGyroAndPose(bool saveToFlashIfStill) {
+// Hareketsizlik Kontrollü Jiroskop & Masa Düzlük (Roll/Pitch Montaj Ofseti) Kalibrasyonu:
+// 'g' komutuyla çağrıldığında (updateDeskLevelInFlash=true) hem jiroskop sıfır noktasını
+// hem de tüfeğin masa üzerindeki dik/düz duruşunu (Roll=0, Pitch=0) kalıcı olarak ESP32 Flash'ına yazar!
+void calibrateGyroAndPose(bool updateDeskLevelInFlash) {
   Serial.println("Jiroskop ve yercekimi kalibre ediliyor (2 sn sabit tutun)...");
   double sumGx = 0, sumGy = 0, sumGz = 0;
   double sumAx = 0, sumAy = 0, sumAz = 0;
@@ -396,6 +525,12 @@ void calibrateGyroAndPose(bool saveToFlashIfStill) {
   smoothTempC = measTempC;
   hasThermalSample = true;
 
+  float avgAx = (float)(sumAx / validImu) * ACCEL_SCALE;
+  float avgAy = (float)(sumAy / validImu) * ACCEL_SCALE;
+  float avgAz = (float)(sumAz / validImu) * ACCEL_SCALE;
+  float initAccMag = sqrtf(avgAx * avgAx + avgAy * avgAy + avgAz * avgAz);
+  smoothAccMag = (initAccMag > 0.85f && initAccMag < 1.15f) ? initAccMag : 1.0f;
+
   float spreadX = (float)(maxGx - minGx) * GYRO_DEG_SCALE;
   float spreadY = (float)(maxGy - minGy) * GYRO_DEG_SCALE;
   float spreadZ = (float)(maxGz - minGz) * GYRO_DEG_SCALE;
@@ -423,16 +558,25 @@ void calibrateGyroAndPose(bool saveToFlashIfStill) {
     biasRefTempC = measTempC;
     hasFlashGyroCal = true;
 
-    if (saveToFlashIfStill) {
-      saveGyroCalToFlash();
+    // 'g' masa komutu gönderildiyse (veya Flash'ta henüz hiç düzlük kaydı yoksa)
+    // sensörün tüfek üzerindeki fiziksel Roll/Pitch montaj eğimini ölçüp Flash'a kalıcı yaz!
+    if (updateDeskLevelInFlash || !hasFlashLevelCal) {
+      if (updateLevelMountMatrix(avgAx, avgAy, avgAz)) {
+        hasFlashLevelCal = true;
+      }
     }
-    Serial.printf("[OK] Temiz sabit kalibrasyon tamam! (Temp:%.1fC | Salinim:%.2f deg/s | Flash Kayitli)\n",
-                  measTempC, maxGyroSpreadDegS);
+
+    saveGyroCalToFlash();
+
+    float rollMountDeg  = atan2f(levelRefAx, levelRefAz) * RAD_TO_DEG_F;
+    float pitchMountDeg = atan2f(levelRefAy, levelRefAz) * RAD_TO_DEG_F;
+    Serial.printf("[OK] Kalici Masa Kalibrasyonu Flash'a Kaydedildi! (Temp:%.1fC | Roll Ofset:%+.2f deg, Pitch Ofset:%+.2f deg)\n",
+                  measTempC, rollMountDeg, pitchMountDeg);
   } else if (hasFlashGyroCal) {
     gxOffset = baseGxOffset;
     gyOffset = baseGyOffset;
     gzOffset = baseGzOffset;
-    Serial.printf("[KORUMA] Acilista hareket algilandi (%.1f deg/s) -> Flash'taki temiz kalibrasyon kullanildi (Temp:%.1fC)!\n",
+    Serial.printf("[KORUMA] Acilista hareket algilandi (%.1f deg/s) -> Flash'taki kalici masa kalibrasyonu kullanildi (Temp:%.1fC)!\n",
                   maxGyroSpreadDegS, measTempC);
   } else {
     baseGxOffset = gxOffset = measGx;
@@ -451,13 +595,9 @@ void calibrateGyroAndPose(bool saveToFlashIfStill) {
   aimStillCount = 0;
   accelSettleCount = ACCEL_SETTLE_SAMPLES_REQ;
 
-  float avgAx = (float)(sumAx / validImu) * ACCEL_SCALE;
-  float avgAy = (float)(sumAy / validImu) * ACCEL_SCALE;
-  float avgAz = (float)(sumAz / validImu) * ACCEL_SCALE;
-  float initAccMag = sqrtf(avgAx * avgAx + avgAy * avgAy + avgAz * avgAz);
-  smoothAccMag = (initAccMag > 0.85f && initAccMag < 1.15f) ? initAccMag : 1.0f;
-
-  initQuatFromAccel(avgAx, avgAy, avgAz);
+  float leveledAx = avgAx, leveledAy = avgAy, leveledAz = avgAz;
+  applyLevelMountRotation(leveledAx, leveledAy, leveledAz);
+  initQuatFromAccel(leveledAx, leveledAy, leveledAz);
   bootMillis = millis();
 }
 
@@ -712,9 +852,16 @@ void initSensors() {
     Serial.printf("Flash Termal  : Ref:%.1fC | Egim(LSB/C): %.2f, %.2f, %.2f\n",
                   biasRefTempC, thermalKx, thermalKy, thermalKz);
   }
+  if (hasFlashLevelCal) {
+    float rollMountDeg  = atan2f(levelRefAx, levelRefAz) * RAD_TO_DEG_F;
+    float pitchMountDeg = atan2f(levelRefAy, levelRefAz) * RAD_TO_DEG_F;
+    Serial.printf("Flash Duzluk  : Aktif (Roll:%+.2f deg, Pitch:%+.2f deg montaj ofseti sifirli)\n",
+                  rollMountDeg, pitchMountDeg);
+  }
   Serial.println("============================================================");
 
-  calibrateGyroAndPose(true);
+  // Açılışta Flash'taki masa düzlük kaydını koru (yalnız 'g' komutu veya ilk kurulum yeni düzlük yazar)
+  calibrateGyroAndPose(false);
 }
 
 // Koning Telafili Exact Lie-Group Quaternion Exponential + Dinamik İvme Korumalı 6-DOF AHRS
@@ -1127,7 +1274,12 @@ void imuTaskFn(void* param) {
         }
       }
 
-      updateAHRS6DofExact(gx, gy, gz, ax, ay, az, dt, activeBeta);
+      float calGx = gx, calGy = gy, calGz = gz;
+      float calAx = ax, calAy = ay, calAz = az;
+      applyLevelMountRotation(calGx, calGy, calGz);
+      applyLevelMountRotation(calAx, calAy, calAz);
+
+      updateAHRS6DofExact(calGx, calGy, calGz, calAx, calAy, calAz, dt, activeBeta);
 
       uint32_t nowMs = millis();
       bool statRollover = (nowMs - lastStatResetMs >= DEBUG_INTERVAL_MS);
@@ -1192,8 +1344,105 @@ void imuTaskFn(void* param) {
   }
 }
 
+// --- HW-504 JOYSTICK (ADC1) MERKEZ KALİBRASYONU VE OKUMA (Yalnız Core 0 / Setup) ---
+static inline float normalizeJoystickAxis(float rawVal, float center) {
+  float diff = rawVal - center;
+  float span = (diff >= 0.0f)
+      ? fmaxf(400.0f, (4095.0f - JOY_EDGE_MARGIN_RAW) - center)
+      : fmaxf(400.0f, center - JOY_EDGE_MARGIN_RAW);
+  float n = diff / span;
+  if (n > 1.0f) n = 1.0f;
+  if (n < -1.0f) n = -1.0f;
+  return n;
+}
+
+void calibrateJoystickCenter() {
+  long sumX = 0;
+  long sumY = 0;
+  int minX = 4095, maxX = 0;
+  int minY = 4095, maxY = 0;
+  const int SAMPLES = 64;
+
+  for (int i = 0; i < SAMPLES; i++) {
+    int rx = analogRead(JOY_VRX_PIN);
+    int ry = analogRead(JOY_VRY_PIN);
+    sumX += rx;
+    sumY += ry;
+    if (rx < minX) minX = rx;
+    if (rx > maxX) maxX = rx;
+    if (ry < minY) minY = ry;
+    if (ry > maxY) maxY = ry;
+    delayMicroseconds(500);
+  }
+
+  float avgX = (float)sumX / SAMPLES;
+  float avgY = (float)sumY / SAMPLES;
+  int spreadX = maxX - minX;
+  int spreadY = maxY - minY;
+
+  bool validX = (avgX >= 1100.0f && avgX <= 3000.0f && spreadX < 350);
+  bool validY = (avgY >= 1100.0f && avgY <= 3000.0f && spreadY < 350);
+
+  joyCenterX = validX ? avgX : 2048.0f;
+  joyCenterY = validY ? avgY : 2048.0f;
+  joyFiltRawX = joyCenterX;
+  joyFiltRawY = joyCenterY;
+  joyLastRawX = (int)lroundf(avgX);
+  joyLastRawY = (int)lroundf(avgY);
+  joyOutX = 0;
+  joyOutY = 0;
+
+  if (serialCanWriteNow()) {
+    if (validX && validY) {
+      Serial.printf("[JOYSTICK] Merkez kalibre edildi -> VRx(GPIO%d):%.0f (yayilim:%d) | VRy(GPIO%d):%.0f (yayilim:%d) | SW(GPIO%d):%u\n",
+                    JOY_VRX_PIN, joyCenterX, spreadX, JOY_VRY_PIN, joyCenterY, spreadY,
+                    JOY_SW_PIN, (digitalRead(JOY_SW_PIN) == LOW) ? 1 : 0);
+    } else {
+      Serial.printf("[UYARI] Joystick merkezde/bagli degil (VRx:%.0f[%d], VRy:%.0f[%d]) -> varsayilan 2048 kullanildi! Baglayinca 'j' gonderin.\n",
+                    avgX, spreadX, avgY, spreadY);
+    }
+  }
+}
+
+void sampleJoystickAnalog() {
+  int rx = (analogRead(JOY_VRX_PIN) + analogRead(JOY_VRX_PIN)) >> 1;
+  int ry = (analogRead(JOY_VRY_PIN) + analogRead(JOY_VRY_PIN)) >> 1;
+  joyLastRawX = rx;
+  joyLastRawY = ry;
+
+  joyFiltRawX += ((float)rx - joyFiltRawX) * JOY_SMOOTH_ALPHA;
+  joyFiltRawY += ((float)ry - joyFiltRawY) * JOY_SMOOTH_ALPHA;
+
+  float nx = normalizeJoystickAxis(joyFiltRawX, joyCenterX);
+  float ny = normalizeJoystickAxis(joyFiltRawY, joyCenterY);
+
+  if (JOY_SWAP_XY) {
+    float tmp = nx;
+    nx = ny;
+    ny = tmp;
+  }
+  if (JOY_INVERT_X) nx = -nx;
+  if (JOY_INVERT_Y) ny = -ny;
+
+  // Dairesel ölü bölge (radial deadzone): çapraz yürüyüşte eksen kilitlenmesi yapmaz, 0..1000 arası pürüzsüz başlar
+  float mag = sqrtf(nx * nx + ny * ny);
+  if (mag <= JOY_DEADZONE) {
+    nx = 0.0f;
+    ny = 0.0f;
+  } else {
+    float scaled = (mag - JOY_DEADZONE) / (1.0f - JOY_DEADZONE);
+    if (scaled > 1.0f) scaled = 1.0f;
+    float k = scaled / mag;
+    nx *= k;
+    ny *= k;
+  }
+
+  joyOutX = (int16_t)lroundf(nx * 1000.0f);
+  joyOutY = (int16_t)lroundf(ny * 1000.0f);
+}
+
 // --- CORE 0 AĞ, 250 Hz UNICAST UDP VE SERİ PORT GÖREVİ ---
-void sendUDPPacket(bool forceTriggerHigh, bool forceMagHigh, const SharedImuSnapshot& snap) {
+void sendUDPPacket(bool forceTriggerHigh, bool forceMagHigh, bool forceRecenterHigh, const SharedImuSnapshot& snap) {
   if (WiFi.status() != WL_CONNECTED) return;
 
   packet.header         = 0xAA;
@@ -1206,6 +1455,11 @@ void sendUDPPacket(bool forceTriggerHigh, bool forceMagHigh, const SharedImuSnap
   packet.shoulderState  = shoulderState;
   packet.magState       = (forceMagHigh || !magArmed) ? 1 : 0;
   packet.magToggleCount = magToggleCounter;
+  packet.recenterState  = (forceRecenterHigh || !recenterArmed) ? 1 : 0;
+  packet.recenterCount  = recenterCounter;
+  packet.joyX           = joyOutX;
+  packet.joyY           = joyOutY;
+  packet.joySwState     = joySwState;
 
   udp.beginPacket(targetIp, UDP_PORT);
   udp.write((const uint8_t*)&packet, sizeof(packet));
@@ -1297,6 +1551,8 @@ void handleSerialCommands() {
       pendingCal = CAL_RESET_SCALE;
     } else if (cmd == 'c' || cmd == 'C') {
       pendingCal = CAL_CLEAR_ALL;
+    } else if (cmd == 'j' || cmd == 'J') {
+      pendingJoyRecenter = true;
     }
   }
 }
@@ -1305,9 +1561,10 @@ void netTaskFn(void* param) {
   (void)param;
 
   connectBestWifi();
-  Serial.println("[KOMUTLAR] 'g': Sabit Masa Kalibresi | 's': 360 Derece Olcek Kalibresi | 'r': Olcek Sifirla | 'c': Flash Temizle");
+  Serial.println("[KOMUTLAR] 'g': Sabit Masa Kalibresi | 's': 360 Derece Olcek Kalibresi | 'r': Olcek Sifirla | 'c': Flash Temizle | 'j': Joystick Merkez Sifirla");
 
   uint32_t lastUdpUs = micros();
+  uint32_t lastJoyUs = micros();
   uint32_t lastDebugMs = millis();
 #if (configTICK_RATE_HZ >= 1000)
   TickType_t lastNetWake = xTaskGetTickCount();
@@ -1405,24 +1662,98 @@ void netTaskFn(void* param) {
       }
     }
 
-    // 3) 250 Hz Deterministik Unicast UDP Göndericisi (Acil tetik/omuz/şarjör olayları anında gider)
+    // 2.6) VR & LED Sıfırlama Butonu Filtresi (GPIO 18 <-> GND: 25 ms kesintisiz LOW -> Ekrana 2 parmak dokunma ile aynı)
+    bool recenterLow = (digitalRead(RECENTER_PIN) == LOW);
+    if (recenterArmed) {
+      if (recenterLow) {
+        if (!recenterLowTracking) {
+          recenterLowTracking = true;
+          recenterLowStartUs = nowUs;
+          recenterLowSamples = 1;
+        } else {
+          recenterLowSamples++;
+          if ((nowUs - recenterLowStartUs >= RECENTER_CONFIRM_US) &&
+              (recenterLowSamples >= 12) &&
+              (nowUs - lastRecenterPressUs >= MIN_RECENTER_GAP_US)) {
+            recenterArmed = false;
+            recenterLowTracking = false;
+            recenterLowSamples = 0;
+            recenterHighTracking = false;
+            lastRecenterPressUs = nowUs;
+            recenterCounter++;
+            recenterEventFlag = true;
+            if (serialCanWriteNow()) {
+              Serial.printf("[SIFIRLA] GPIO%d butonu onaylandi -> Sifirlama #%u (VR 2-Parmak / Kafa + Tufek + LED Sifirlama)\n",
+                            RECENTER_PIN, (unsigned)recenterCounter);
+            }
+          }
+        }
+      } else if (recenterLowTracking) {
+        recenterLowTracking = false;
+        recenterLowSamples = 0;
+      }
+    } else {
+      if (!recenterLow) {
+        if (!recenterHighTracking) {
+          recenterHighTracking = true;
+          recenterHighStartUs = nowUs;
+        } else if (nowUs - recenterHighStartUs >= RECENTER_RELEASE_US) {
+          recenterArmed = true;
+          recenterHighTracking = false;
+        }
+      } else {
+        recenterHighTracking = false;
+      }
+    }
+
+    // 2.7) HW-504 Analog Joystick (GPIO 4/5 ADC1) & Orta Basma Butonu (GPIO 6 SW)
+    if (pendingJoyRecenter) {
+      pendingJoyRecenter = false;
+      calibrateJoystickCenter();
+    }
+    if (nowUs - lastJoyUs >= JOY_SAMPLE_INTERVAL_US) {
+      lastJoyUs = nowUs;
+      sampleJoystickAnalog();
+    }
+    uint8_t rawJoySw = (digitalRead(JOY_SW_PIN) == LOW) ? 1 : 0;
+    if (rawJoySw != joySwState) {
+      if (!joySwPendingTracking || joySwPendingVal != rawJoySw) {
+        joySwPendingTracking = true;
+        joySwPendingVal = rawJoySw;
+        joySwPendingStartUs = nowUs;
+      } else if (nowUs - joySwPendingStartUs >= JOY_SW_DEBOUNCE_US) {
+        joySwState = rawJoySw;
+        joySwPendingTracking = false;
+        joySwEventFlag = true;
+        if (serialCanWriteNow()) {
+          Serial.printf("[JOYSTICK-SW] GPIO%d -> %s\n", JOY_SW_PIN, joySwState ? "BASILI (Sprint)" : "SERBEST");
+        }
+      }
+    } else {
+      joySwPendingTracking = false;
+    }
+
+    // 3) 250 Hz Deterministik Unicast UDP Göndericisi (Acil tetik/omuz/şarjör/sıfırlama/SW olayları anında gider)
     bool timeForRegularUdp  = (nowUs - lastUdpUs >= UDP_INTERVAL_US);
-    bool urgentEventPending = (triggerEventFlag || shoulderEventFlag || magEventFlag) && (nowUs - lastUdpUs >= MIN_UDP_GAP_US);
+    bool urgentEventPending = (triggerEventFlag || shoulderEventFlag || magEventFlag || recenterEventFlag || joySwEventFlag) && (nowUs - lastUdpUs >= MIN_UDP_GAP_US);
 
     if (urgentEventPending || timeForRegularUdp) {
-      bool isTriggerShot = triggerEventFlag;
-      bool isMagToggle   = magEventFlag;
-      triggerEventFlag   = false;
-      shoulderEventFlag  = false;
-      magEventFlag       = false;
-      lastUdpUs          = nowUs;
+      bool isTriggerShot  = triggerEventFlag;
+      bool isMagToggle    = magEventFlag;
+      bool isRecenterShot = recenterEventFlag;
+      triggerEventFlag    = false;
+      shoulderEventFlag   = false;
+      magEventFlag        = false;
+      recenterEventFlag   = false;
+      joySwEventFlag      = false;
+      lastUdpUs           = nowUs;
 
       SharedImuSnapshot snap;
       portENTER_CRITICAL(&stateMux);
       snap = sharedState;
       portEXIT_CRITICAL(&stateMux);
 
-      sendUDPPacket(isTriggerShot, isMagToggle, snap);
+      sendUDPPacket(isTriggerShot, isMagToggle, isRecenterShot, snap);
     }
 
     // 4) Seri komutlar, Unity Unicast keşfi ve 1 Hz teşhis çıktısı
@@ -1456,17 +1787,20 @@ void netTaskFn(void* param) {
         if (!snap.calBusy) {
           uint8_t liveTrig = (digitalRead(TRIGGER_PIN) == LOW) ? 1 : 0;
           uint8_t liveMag  = (digitalRead(MAG_PIN) == LOW) ? 1 : 0;
+          uint8_t liveRec  = (digitalRead(RECENTER_PIN) == LOW) ? 1 : 0;
           const char* modeTag = (snap.zuptTier == 2) ? "6DOF-SABIT"
                               : (snap.zuptTier == 1 ? "6DOF-NISAN" : "6DOF-HAREKET");
 
-          Serial.printf("[%s] %luHz maxDt:%.1fms | Temp:%.1fC | G(%+.2f,%+.2f,%+.2f) | Sc(%.3f,%.3f,%.3f) | T:%u O:%u S:%u(%u) A:%lu",
+          Serial.printf("[%s] %luHz maxDt:%.1fms | Temp:%.1fC | G(%+.2f,%+.2f,%+.2f) | Sc(%.3f,%.3f,%.3f) | T:%u O:%u S:%u(%u) R:%u(%u) A:%lu | J(X:%+d,Y:%+d,SW:%u raw:%d,%d)",
                         modeTag,
                         (unsigned long)snap.imuSamplesInSec,
                         snap.maxDtUs * 0.001f,
                         snap.tempC,
                         snap.gxDegS, snap.gyDegS, snap.gzDegS,
                         snap.scaleX, snap.scaleY, snap.scaleZ,
-                        liveTrig, shoulderState, liveMag, (unsigned)magToggleCounter, (unsigned long)snap.shotCount);
+                        liveTrig, shoulderState, liveMag, (unsigned)magToggleCounter,
+                        liveRec, (unsigned)recenterCounter, (unsigned long)snap.shotCount,
+                        (int)joyOutX, (int)joyOutY, joySwState, joyLastRawX, joyLastRawY);
           if (snap.satCount > 0) {
             Serial.printf(" | SAT:%lu", (unsigned long)snap.satCount);
           }
@@ -1502,6 +1836,13 @@ void setup() {
   pinMode(TRIGGER_PIN, INPUT_PULLUP);
   pinMode(SHOULDER_PIN, INPUT_PULLUP);
   pinMode(MAG_PIN, INPUT_PULLUP);
+  pinMode(RECENTER_PIN, INPUT_PULLUP);
+  pinMode(JOY_SW_PIN, INPUT_PULLUP);
+
+  analogReadResolution(12);
+  analogSetPinAttenuation(JOY_VRX_PIN, ADC_11db);
+  analogSetPinAttenuation(JOY_VRY_PIN, ADC_11db);
+  calibrateJoystickCenter();
 
   initSensors();
 
@@ -1521,6 +1862,9 @@ void setup() {
   shoulderState = (digitalRead(SHOULDER_PIN) == LOW) ? 1 : 0;
   magArmed = (digitalRead(MAG_PIN) == HIGH);
   lastMagToggleUs = micros() - MIN_MAG_TOGGLE_GAP_US;
+  recenterArmed = (digitalRead(RECENTER_PIN) == HIGH);
+  lastRecenterPressUs = micros() - MIN_RECENTER_GAP_US;
+  joySwState = (digitalRead(JOY_SW_PIN) == LOW) ? 1 : 0;
 
   portENTER_CRITICAL(&stateMux);
   sharedState.triggerHeld = !trigArmedCore1;

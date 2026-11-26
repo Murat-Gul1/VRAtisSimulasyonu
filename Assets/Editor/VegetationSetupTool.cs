@@ -28,6 +28,9 @@ namespace VRAtis.EditorTools
             if (EditorApplication.isPlayingOrWillChangePlaymode || Application.isBatchMode)
                 return;
 
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "SampleScene")
+                return;
+
             if (GameObject.Find(RootObjectName) != null && EditorPrefs.GetBool(AutoSetupVersionKey, false))
                 return;
 
